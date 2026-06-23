@@ -1,0 +1,91 @@
+---
+name: maple-reset-cycles
+description: 메이플스토리 컨텐츠의 초기화 주기(일일/주간 퀘스트/주간 보스)와 체크리스트 완료 상태를 모델링하는 방법을 다루는 스킬. mapletool에서 일일/주간/보스 체크 완료 여부, 초기화 시각, "주기 키(period key)" 계산, 완료 자동 리셋(리셋 배치 불필요), 다음 초기화까지 남은 시간 표시, 멱등 완료 기록(중복 INSERT 방지) 등을 구현하거나 디버깅할 때 사용한다. 초기화, 리셋, 일일/주간/보스, 월요일 초기화, 목요일 초기화, KST, UTC+9, 완료 상태, 체크리스트 주기, currentPeriodKey, period_key, periodStart, dayNum, ResetType, daily/weekly_mon/weekly_thu, category 와 reset_type 구분, 새 초기화 주기(월간) 추가, 남은 시간/다음 초기화 같은 요청에 매칭된다.
+---
+
+# 메이플 초기화 주기 & 체크리스트 완료 상태 모델링
+
+mapletool은 일일/주간 퀘스트와 주간 보스의 완료 여부를 체크하는 보조 웹앱이다. 핵심 메커니즘은 `src/lib/period.ts` 에 구현되어 있다. 이 스킬은 **메커니즘**만 다룬다. 어떤 보스/콘텐츠가 일일·주간인지의 **목록**은 패치마다 바뀌므로 절대 여기에 하드코딩하지 말고 `src/lib/presets.ts` 에서만 관리한다.
+
+## 초기화 규칙 (모든 시각 Asia/Seoul, UTC+9 고정)
+
+- **일일(daily)**: 매일 00:00 KST 초기화.
+- **주간 퀘스트(weekly_mon)**: 매주 **월요일** 00:00 KST 초기화. resetWeekday = 1.
+- **주간 보스(weekly_thu)**: 매주 **목요일** 00:00 KST 초기화. resetWeekday = 4.
+
+KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 UTC로 동작할 수 있으므로 시각 계산은 절대 `new Date()`의 로컬 필드(`getHours()`/`getDay()` 등)를 직접 쓰지 말고 항상 KST로 변환한다. `period.ts`는 `Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", ... })`로 변환하므로(`kstParts`), 서버 타임존과 무관하게 동일한 결과가 나온다.
+
+`ResetType = "daily" | "weekly_mon" | "weekly_thu"`. 사람이 읽는 라벨은 `RESET_LABEL` 맵(`Record<ResetType, string>`)을 쓴다. 실제 값:
+
+- `daily` → `"매일 00시 초기화"`
+- `weekly_mon` → `"월요일 00시 초기화"`
+- `weekly_thu` → `"목요일 00시 초기화"`
+
+## 완료 상태는 "주기 키(period key)" 기반
+
+별도의 리셋 배치/크론 없이 완료가 자동으로 초기화되도록 설계되어 있다.
+
+- `currentPeriodKey(resetType, now?)` 는 **같은 주기 안에서는 항상 같은 문자열**, **초기화 시점이 지나면 다른 문자열**을 반환한다.
+- 완료 기록을 `(item, period_key)` 형태로 저장한다.
+- 완료 판단 = "현재 `currentPeriodKey(item.reset_type)` 와 일치하는 완료 기록이 존재하는가".
+- 초기화 시각이 지나면 키가 달라지므로 과거 키 기록은 자동으로 "현재 주기에 대한 완료 없음"이 된다 → **리셋 배치/크론 불필요**.
+
+이 모델 덕분에 "초기화 시간에 모든 행을 미완료로 UPDATE" 하는 작업이 전혀 필요 없다.
+
+- **완료 처리 = INSERT** (현재 `period_key`로 한 행 추가).
+- **완료 해제 = DELETE** (해당 `(item, period_key)` 행 삭제).
+- **멱등성 필수**: 같은 주기에서 같은 항목을 두 번 완료해도 행이 중복되면 안 된다. 저장 테이블에 `unique(user_id, item_id, period_key)`(또는 등가) 제약을 두고, INSERT는 `upsert`/`on conflict do nothing`으로 멱등하게 처리한다. 자세한 스키마/RLS/제약은 `supabase-architect` 에이전트가 설계한다.
+
+## period.ts 실제 구현 요약 (정확한 코드는 `src/lib/period.ts` 참조)
+
+- `kstParts(now)`: `Intl.DateTimeFormat`(locale `"en-CA"`, `timeZone: "Asia/Seoul"`)로 KST 기준 `year`/`month`/`day`/`weekday`를 뽑는다. **`weekday`는 일=0, 월=1, … 토=6** (내부 `weekdayMap`으로 `Sun`→0 … `Sat`→6 변환).
+- `kstDayNumber(now)`: KST 자정 기준 일련번호. `Math.floor(Date.UTC(year, month-1, day) / 86400000)` — UTC epoch day가 아니라 **KST 날짜(year/month/day)를 그대로 UTC 정오 없이 자정으로 본 표시용 일수**다. 같은 KST 달력 날짜면 서버 타임존과 무관하게 같은 값이 나온다.
+- 키 형식 (아래 예시는 모두 **2026-06-23(KST 화요일, dayNum=20627)** 기준 — 코드로 직접 검증 가능):
+  - `daily` → `` `d-${dayNum}` `` → `d-20627`
+  - `weekly_mon` → `` `weekly_mon-${periodStart}` `` → 직전 월요일은 2026-06-22(dayNum 20626) → `weekly_mon-20626`
+  - `weekly_thu` → `` `weekly_thu-${periodStart}` `` → 직전 목요일은 2026-06-18(dayNum 20622) → `weekly_thu-20622`
+- 주간 `periodStart` 계산: 현재 KST 요일에서 직전 초기화 요일까지 거슬러 올라간 일수만큼 `dayNum`을 뺀다.
+  - `resetWeekday = resetType === "weekly_mon" ? 1 : 4`
+  - `diff = (weekday - resetWeekday + 7) % 7`
+  - `periodStart = dayNum - diff`
+  - 검증 예(화요일 weekday=2): `weekly_mon` → diff=(2-1+7)%7=1 → 20627-1=20626. `weekly_thu` → diff=(2-4+7)%7=5 → 20627-5=20622.
+  - 즉 같은 주기에 속한 모든 날은 같은 `periodStart`(직전 월/목요일의 dayNum)를 가지므로 키가 동일하다.
+
+## category 와 reset_type 은 서로 다른 개념 (혼동 금지)
+
+`src/lib/presets.ts` 의 `PresetItem` 은 두 필드를 모두 갖는다.
+
+- **`category`** (`ChecklistCategory = "daily" | "weekly" | "boss"`): **UI 표시 그룹**. 화면에서 묶어 보여줄 섹션. `CATEGORY_LABEL`(일일 컨텐츠/주간 퀘스트/주간 보스), `CATEGORY_ORDER`(`["daily","weekly","boss"]`)로 라벨/정렬을 정한다.
+- **`reset_type`** (`ResetType`): **초기화 주기(완료 판정에 사용)**. `currentPeriodKey`에 넘기는 값.
+
+이 둘은 보통 연관되지만 항상 1:1은 아니다. 실제 프리셋에서도 `category: "weekly"` 항목은 `reset_type: "weekly_mon"`(월요일), `category: "boss"` 항목은 `reset_type: "weekly_thu"`(목요일)로 **서로 다른 의미**다. **완료 여부는 언제나 `reset_type`으로 계산하고, `category`는 화면 그룹핑/정렬에만 쓴다.** 절대 `category`로 주기 키를 만들지 말 것(`currentPeriodKey(item.category)`는 타입상 우연히 통과할 수 있는 `"daily"`/`"weekly"` 같은 값에서도 의미가 틀어진다 — 반드시 `item.reset_type`을 넘긴다).
+
+## 새 초기화 주기 추가 절차 (예: 월간 monthly)
+
+1. `src/lib/period.ts` 의 `ResetType` 유니온에 새 값 추가(예: `"monthly"`).
+2. `currentPeriodKey` 에 분기 추가. 월간이라면 KST 기준 "매월 1일 00:00" 시작을 묶는 키를 만든다(예: `` `monthly-${year}-${month}` `` — `kstParts(now)`의 `year`/`month` 사용). 일/주간과 동일하게 "같은 주기 = 같은 문자열" 불변식을 지킬 것.
+3. `RESET_LABEL` 에 사람이 읽는 라벨 추가. 타입이 `Record<ResetType, string>` 이라 누락하면 컴파일 에러로 안전망 역할을 한다(빌드 시 `next build`/`next lint`에서 잡힘).
+4. 필요하면 `src/lib/presets.ts` 에서 해당 `reset_type`을 쓰는 프리셋 항목 추가.
+5. 새 주기가 기존 표시 그룹과 안 맞으면 `ChecklistCategory`/`CATEGORY_LABEL`/`CATEGORY_ORDER` 도 함께 갱신.
+6. 저장 스키마 변경은 보통 불필요하다 — `period_key`는 문자열 컬럼이라 새 형식 키(`monthly-2026-6`)를 그대로 수용한다. 단 멱등 유니크 제약과 조회 쿼리 영향은 `supabase-architect` 와 확인.
+
+## 엣지 케이스 / 주의
+
+- **자정 경계**: 정확히 00:00 KST에 키가 바뀐다. `period.ts`는 시(hour)가 아닌 KST "날짜"로 일수를 계산하므로 23:59:59 → 00:00:00 전환 시 `dayNum`이 1 증가하고 키가 즉시 갱신된다.
+- **타임존 무관**: 사용자가 미국 등 다른 타임존에서 접속해도 완료 판정은 항상 KST 기준이다(서버에서 `currentPeriodKey` 계산). 클라이언트 로컬 시간(`new Date().getDay()` 등)으로 판정하지 말 것.
+- **읽기 캐시 vs 시간 민감성**: 완료 판정/주기 키는 항상 요청 시점에 계산해야 한다(캐시 금지). 넥슨 API 응답 캐시(`maple.ts`의 `next: { revalidate: 60 }`)와 혼동하지 말 것 — 그건 `nexon-maple-api` 영역이며, 주기 키 계산과는 무관하다.
+- **"남은 시간" 표시(다음 초기화 시각 계산)**: 핵심은 "다음 초기화는 항상 미래의 KST 자정"이라는 점이다. 현재 시각이 이미 초기화일 자정을 지났다면 그 자정이 아니라 **다음** 자정을 가리켜야 한다(음수 잔여시간 버그 방지).
+  - daily: 다음 KST 자정 = 현재 KST 날짜 `dayNum + 1`의 00:00(KST). UTC로는 그 날짜의 `Date.UTC(y, m-1, d+1) - 9*3600*1000`.
+  - weekly: 다음 해당 요일(월=1/목=4) 00:00 KST.
+    - `daysAhead = (resetWeekday - weekday + 7) % 7`
+    - `daysAhead === 0`(오늘이 바로 초기화 요일)이면 이미 오늘 자정은 지났으므로 `daysAhead = 7`로 보정한다.
+    - 대상 자정 = `dayNum + daysAhead` 의 00:00 KST.
+  - 표시는 (대상 KST 자정 − 현재 시각)을 시/분/초로 포맷. UTC+9 고정이라 DST 보정은 불필요.
+  - 헬퍼가 필요하면 `period.ts`에 `nextResetAt(resetType, now): Date` 형태로 추가하고 위 키 계산과 동일한 `kstParts`/`kstDayNumber` KST 변환을 재사용할 것(시간 계산 로직을 여러 파일에 흩뿌리지 말 것).
+- **콘텐츠 목록 하드코딩 금지**: 어떤 보스/퀘스트가 어느 주기인지는 패치마다 바뀐다. 이 스킬과 `period.ts`는 메커니즘만, 실제 항목은 `presets.ts`(및 사용자별 커스텀 항목 DB)에서 관리한다.
+
+## 관련 설정
+
+- `mapletool-conventions`: 전반적 프로젝트 컨벤션(경로 별칭 `@/*` → `./src/*`, 서버 전용 모듈, TS strict 등).
+- `nexon-maple-api`: 캐릭터/스탯 조회용 넥슨 OpenAPI 레퍼런스(완료 상태 모델과는 별개 영역).
+- `supabase-architect` 에이전트: `(user_id, item_id, period_key)` 완료 기록 테이블 스키마·유니크 제약·RLS 설계와 멱등 INSERT(upsert)/DELETE 쿼리를 담당.
