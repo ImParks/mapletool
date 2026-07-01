@@ -80,6 +80,12 @@ export interface CharacterBasic {
   character_exp_rate: string;
   character_guild_name: string | null;
   character_image: string;
+  /** 캐릭터 생성일 (KST ISO, 예: "2023-12-21T00:00+09:00") */
+  character_date_create: string | null;
+  /** 최근 7일 이내 접속 여부 ("true" | "false") */
+  access_flag: string;
+  /** 해방(제네시스 무기) 퀘스트 완료 여부 ("true" | "false") */
+  liberation_quest_clear: string;
 }
 
 export interface StatEntry {
@@ -165,7 +171,7 @@ export function getOcid(apiKey: string, characterName: string) {
   });
 }
 
-/** 캐릭터 기본 정보 */
+/** 캐릭터 기본 정보 (2023-12-21 데이터부터 조회 가능). date는 KST YYYY-MM-DD. */
 export function getCharacterBasic(apiKey: string, ocid: string, date?: string) {
   return request<CharacterBasic>(apiKey, "/maplestory/v1/character/basic", {
     ocid,
