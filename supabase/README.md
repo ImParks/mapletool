@@ -11,6 +11,7 @@
 | `migrations/20260702090100_functions_triggers.sql` | `is_admin` / `handle_new_user` / `guard_profile_update` / `sync_nexon_key_flag` / `set_updated_at` + 트리거 |
 | `migrations/20260702090200_rls_policies.sql` | RLS 활성화 + 정책 + GRANT |
 | `migrations/20260702090300_seed_boss_presets.sql` | 주간 보스 프리셋 b1..b6 시드 |
+| `migrations/20260702090400_delete_own_account.sql` | 회원탈퇴 RPC `delete_own_account()` |
 
 모두 **멱등**(`create table if not exists`, `create or replace`, `drop policy/trigger if exists`,
 `create index if not exists`, `on conflict do nothing`)이라 재적용해도 안전하다.
@@ -137,6 +138,37 @@ v1에서는 `access_log`를 **추가하지 않았다.**
    해제 = 해당 4-튜플 DELETE.
 4. 완료 판단 = "현재 `period_key`와 일치하는 행 존재 여부". 새 주기가 되면 키가 달라져 자동 미완료
    → **리셋 배치/크론 불필요**.
+
+## 회원탈퇴(계정 삭제) 흐름
+
+이 앱은 **service_role 을 쓰지 않는다**(anon 키 + RLS 만). Supabase 에서 `auth.users` 행 삭제는
+보통 Admin API(`supabase.auth.admin.deleteUser()`, service_role 필요)로만 가능하므로, 대신
+`public.delete_own_account()` (SECURITY DEFINER RPC, `20260702090400_delete_own_account.sql`)로
+"호출자 본인만" 지울 수 있는 좁은 구멍을 뚫었다.
+
+- **인자 없음.** target user_id 를 파라미터로 받지 않고 항상 함수 내부에서
+  `(select auth.uid())`로 호출자 자신만 대상으로 삼는다 — 클라이언트가 남의 id 를 넘겨 삭제시키는
+  경로를 원천 차단.
+- `auth.uid()`가 null(비로그인/신뢰 컨텍스트)이면 예외를 raise 하고 아무것도 지우지 않는다.
+- `delete from auth.users where id = (select auth.uid())` 한 줄만 실행한다.
+  `profiles`/`user_secrets`/`completions`/`quest_durations`/`character_boss_selection` 이 전부
+  `references auth.users(id) on delete cascade`(`boss_presets.created_by` 만
+  `on delete set null` — 개인 데이터가 아니므로 대상 아님)라 이 한 줄로 연쇄 삭제된다.
+- `authenticated` 에만 `grant execute`, `anon`/`public` 은 명시적으로 `revoke`.
+
+**앱에서 호출하는 순서**(서버 액션):
+1. 서버 액션에서 `await supabase.rpc('delete_own_account')` 호출(`@/lib/supabase/server`의
+   서버 클라이언트 — 사용자 세션 쿠키 기반이라 RPC 내부의 `auth.uid()`가 현재 로그인 사용자로 채워짐).
+2. 성공하면(에러 없음) `await supabase.auth.signOut()`으로 로컬 세션/쿠키를 정리한다(서버에서
+   `auth.users` 행 자체가 사라졌으므로 남은 세션 토큰은 더 이상 유효한 사용자를 가리키지 못함 —
+   signOut 으로 클라이언트 상태까지 명시적으로 비운다).
+3. `/`(랜딩)으로 리다이렉트한다.
+
+로컬 PostgreSQL(auth 스키마 흉내 + `auth.uid()` 세션변수 + `anon`/`authenticated` 롤)에 기존 4개
+마이그레이션 + 이 마이그레이션을 순서대로 적용해 라이브 검증 완료: 유저 A 삭제 시 A 의
+`profiles`/`user_secrets`/`completions`/`quest_durations`/`character_boss_selection`이 전부
+cascade 로 사라지고 유저 B 데이터는 전혀 건드려지지 않음, `auth.uid()` null 상태 호출은 예외,
+anon 롤은 실행 권한 자체가 없어 차단, 기존 마이그레이션 전체 재적용도 에러 없이 통과.
 
 ## period_key 포맷 (검증됨, `src/lib/period.ts` 단일 진실)
 
