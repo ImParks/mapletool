@@ -1,0 +1,32 @@
+# 로컬 개발용. 백엔드(Supabase)는 이 파일이 아니라 Supabase CLI가 별도로 띄운다:
+#   npx supabase start   (최초 1회 이 저장소를 만들었으면 supabase/config.toml이 이미 있음)
+#   npx supabase status  (API URL / anon key 확인 → .env 채우기)
+#
+# 그 다음 이 파일로 Next.js 앱만 컨테이너로 띄운다:
+#   docker compose up
+#
+# .env 파일(레포 루트, git에 커밋하지 말 것)에 아래 두 값을 채워둔다:
+#   NEXT_PUBLIC_SUPABASE_URL=http://host.docker.internal:54321
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY=<supabase status 의 anon key>
+# (localhost가 아니라 host.docker.internal인 이유: 컨테이너 안에서 "localhost"는 그
+#  컨테이너 자신을 가리키므로, Supabase CLI가 호스트에 띄운 API에 닿으려면 이 특수
+#  호스트명을 써야 한다. 아래 extra_hosts가 리눅스에서도 이 이름이 동작하게 해준다.)
+services:
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - WATCHPACK_POLLING=true # 일부 환경(특히 볼륨 마운트)에서 파일 변경 감지가 안 될 때 대비
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules # 호스트 node_modules와 섞이지 않게 분리
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Linux에서도 host.docker.internal 사용 가능하게
+
+volumes:
+  node_modules:
