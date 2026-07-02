@@ -114,10 +114,20 @@ const config: Config = {
         "maple-spin": {
           to: { transform: "rotate(360deg)" },
         },
+        "maple-pop": {
+          from: { transform: "translateY(6px) scale(.98)" },
+          to: { transform: "none" },
+        },
+        "maple-fade": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
       },
       animation: {
         "maple-float": "maple-float 4s ease-in-out infinite",
         "maple-spin": "maple-spin 0.82s linear",
+        "maple-pop": "maple-pop 160ms cubic-bezier(.16,1,.3,1)",
+        "maple-fade": "maple-fade 180ms cubic-bezier(.4,0,.2,1)",
       },
     },
   },

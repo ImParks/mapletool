@@ -36,7 +36,23 @@ export async function updateSession(request: NextRequest) {
   );
 
   // getUser() 호출로 토큰 갱신 트리거
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // 인증 가드: /main(및 하위 경로)은 로그인해야 접근 가능. 보호 라우트가 늘면 이 배열에 추가한다.
+  const protectedPathPrefixes = ["/main"];
+  const pathname = request.nextUrl.pathname;
+  const isProtectedRoute = protectedPathPrefixes.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+
+  if (isProtectedRoute && !user) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.search = "";
+    return NextResponse.redirect(loginUrl);
+  }
 
   return response;
 }
