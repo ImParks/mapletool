@@ -157,6 +157,50 @@ export interface CharacterStateResponse {
   weekly_boss_clear_limit_count: number;
 }
 
+/** 장착 심볼 항목 (아케인/어센틱 공통). 수치 필드는 문자열이므로 숫자 연산 전 변환 필요 */
+export interface SymbolEquipmentEntry {
+  /** 심볼 명 (예: "아케인심볼 : 소멸의 여로") */
+  symbol_name: string;
+  /** 심볼 아이콘 URL */
+  symbol_icon: string;
+  /** 심볼 설명 */
+  symbol_description: string;
+  /** 심볼 부가 효과 설명 */
+  symbol_other_effect_description: string;
+  /** 심볼로 인한 증가 수치(포스/아케인포스 등) */
+  symbol_force: string;
+  /** 심볼 레벨 */
+  symbol_level: number;
+  /** 심볼로 증가한 힘 */
+  symbol_str: string;
+  /** 심볼로 증가한 민첩 */
+  symbol_dex: string;
+  /** 심볼로 증가한 지력 */
+  symbol_int: string;
+  /** 심볼로 증가한 운 */
+  symbol_luk: string;
+  /** 심볼로 증가한 체력 */
+  symbol_hp: string;
+  /** 심볼로 증가한 아이템 드롭률 */
+  symbol_drop_rate: string;
+  /** 심볼로 증가한 메소 획득량 */
+  symbol_meso_rate: string;
+  /** 심볼로 증가한 경험치 획득량 */
+  symbol_exp_rate: string;
+  /** 현재 보유 성장치 */
+  symbol_growth_count: number;
+  /** 다음 레벨까지 필요한 성장치 */
+  symbol_require_growth_count: number;
+}
+
+/** 장착 심볼 정보 (GET /character/symbol-equipment). 아케인+어센틱을 모두 포함 */
+export interface CharacterSymbolEquipment {
+  date: string | null;
+  character_class: string;
+  /** 장착한 심볼 목록 (미착용 시 비어 있을 수 있음) */
+  symbol: SymbolEquipmentEntry[];
+}
+
 // ---- API 메서드 ----
 
 /** 계정에 연결된 전체 캐릭터 목록 조회 */
@@ -196,6 +240,19 @@ export function getCharacterState(apiKey: string, ocid: string, date?: string) {
   return request<CharacterStateResponse>(
     apiKey,
     "/maplestory/v1/scheduler/character-state",
+    { ocid, date }
+  );
+}
+
+/** 장착 심볼(아케인/어센틱) 정보 (2023-12-21~). date는 KST YYYY-MM-DD. */
+export function getCharacterSymbolEquipment(
+  apiKey: string,
+  ocid: string,
+  date?: string
+) {
+  return request<CharacterSymbolEquipment>(
+    apiKey,
+    "/maplestory/v1/character/symbol-equipment",
     { ocid, date }
   );
 }
