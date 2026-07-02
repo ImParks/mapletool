@@ -1,0 +1,158 @@
+# mapletool Supabase 백엔드 (v1)
+
+넥슨 메이플 숙제 트래커의 데이터 모델 / RLS / 트리거 / 시드. Next.js 15 App Router +
+`@supabase/ssr`(anon 키 + RLS, service_role 미사용) 기준.
+
+## 마이그레이션 파일 (적용 순서 = 파일명 오름차순)
+
+| 파일 | 내용 |
+| --- | --- |
+| `migrations/20260702090000_init_schema.sql` | 확장(pgcrypto), 테이블 6개, 인덱스, 코멘트 |
+| `migrations/20260702090100_functions_triggers.sql` | `is_admin` / `handle_new_user` / `guard_profile_update` / `sync_nexon_key_flag` / `set_updated_at` + 트리거 |
+| `migrations/20260702090200_rls_policies.sql` | RLS 활성화 + 정책 + GRANT |
+| `migrations/20260702090300_seed_boss_presets.sql` | 주간 보스 프리셋 b1..b6 시드 |
+
+모두 **멱등**(`create table if not exists`, `create or replace`, `drop policy/trigger if exists`,
+`create index if not exists`, `on conflict do nothing`)이라 재적용해도 안전하다.
+
+## 적용 방법
+
+```bash
+# 로컬 개발 스택(도커) 초기화 + 전체 마이그레이션 재적용
+supabase db reset
+
+# 원격(연결된 프로젝트)에 신규 마이그레이션 적용
+supabase db push
+```
+
+> Supabase CLI가 없으면 대시보드 SQL Editor에 파일 순서대로 붙여넣어 실행해도 된다.
+
+### 최초 관리자 지정(부트스트랩)
+
+`role` 자가 변경은 트리거로 막혀 있지만, **JWT 없는 신뢰 컨텍스트(대시보드 SQL/서버 SQL,
+`auth.uid()`가 null)** 에서는 변경이 허용된다. 대시보드 SQL Editor에서:
+
+```sql
+update public.profiles set role = 'admin' where id = '<관리자 auth.users id>';
+```
+
+이후에는 관리자(`is_admin()`)가 다른 사용자의 role을 바꿀 수 있다(정책 + 트리거 허용).
+
+## 테이블 요약
+
+| 테이블 | 소유/공유 | 용도 |
+| --- | --- | --- |
+| `profiles` | 본인/관리자(select) | auth.users 1:1. `role`, `nickname`, `last_access_at`, `has_nexon_key`(파생 플래그) |
+| `user_secrets` | 본인 전용 | 넥슨 API 키 원문(`nexon_api_key`), `nexon_key_valid`. **관리자도 접근 불가** |
+| `boss_presets` | 공용(관리자 CRUD) | 주간 보스 프리셋. `id text`, 시드 b1..b6 |
+| `completions` | 본인 전용 | 완료 기록(period_key 모델). `unique(user_id, character_ocid, item_id, period_key)` |
+| `quest_durations` | 본인 전용 | 항목별 예상 소요시간(분). `unique(user_id, item_id)` |
+| `character_boss_selection` | 본인 전용 | 캐릭터별 실제 잡는 보스(행 존재=선택). `unique(user_id, character_ocid, item_id)` |
+
+`item_id`는 전부 **text**로 통일: daily/weekly는 `src/lib/presets.ts`의 코드 id(`d1..d5`,
+`w1..w3`), boss는 `boss_presets.id`. `completions.item_id`는 소스가 섞이므로 FK를 걸지 않고,
+`character_boss_selection.item_id`만 `boss_presets(id)`에 FK(보스 삭제 시 선택 정리).
+
+## 주요 설계 결정
+
+### 1) RLS 설계 (기본 deny + 본인 행 / 관리자 예외)
+
+- 6개 테이블 모두 RLS 활성화. **모든 정책은 `TO authenticated`** → anon은 전부 차단.
+- 본인 데이터 3종(`completions`, `quest_durations`, `character_boss_selection`)은
+  `for all using(auth.uid()=user_id) with check(auth.uid()=user_id)`. INSERT에도 `with check`로
+  `user_id`를 강제하므로 클라이언트가 남의 `user_id`를 넣을 수 없다.
+- `profiles`: 본인 select/update + **관리자 전체 select**(유저현황 페이지용). insert는 트리거만,
+  delete는 auth.users cascade로 처리(정책 없음).
+- `boss_presets`: 인증 사용자 누구나 select, insert/update/delete는 관리자만.
+- **관리자 판정은 `public.is_admin()` (SECURITY DEFINER, `search_path` 고정)** 로 구현.
+  정의자(postgres)로 실행돼 `profiles`의 RLS를 우회하므로 "정책 안에서 profiles를 읽어 정책을
+  평가"하는 **무한 재귀를 피한다**. `auth.uid()`는 initplan 캐싱을 위해 `(select auth.uid())`로 감쌌다.
+- `role` 자가 변경 차단은 정책이 아니라 **`guard_profile_update` BEFORE UPDATE 트리거**가 담당한다
+  (RLS의 `with check`는 새 행만 보고 old/new 비교가 어렵기 때문). 트리거는 `id`/`created_at`을
+  항상 고정하고, 로그인한 일반 사용자의 `role` 변경만 무효화한다.
+
+### 2) 넥슨 API 키 보관 — Vault/pgsodium 대신 "테이블 분리 + RLS" 채택
+
+- **키는 `profiles`가 아니라 별도 `user_secrets` 테이블에 둔다.** 이유: RLS는 **행 단위**라
+  "관리자는 profiles 전체 select 가능" 요구와 "키는 본인만" 요구가 같은 테이블에선 양립 불가하다
+  (컬럼 단위 차단 불가). 분리하면 관리자가 `select * from profiles`를 해도 **키가 물리적으로 없다.**
+- `user_secrets`에는 **관리자 정책을 만들지 않았다** → 관리자도 키 원문 접근 불가. 본인만 CRUD.
+- **Vault/pgsodium 컬럼 암호화는 v1에서 채택하지 않음.** 트레이드오프:
+  - 이 앱은 **service_role 미사용**이라 서버가 "사용자 JWT(authenticated)" 컨텍스트로 DB를 읽는다.
+    Vault의 `vault.decrypted_secrets` 복호화는 상위 권한(service_role/postgres)을 요구하므로,
+    authenticated 컨텍스트에서 쓰려면 SECURITY DEFINER RPC + Vault 권한 부여가 필요해 복잡도가 크다.
+  - 게다가 복호화 RPC를 "본인 것만" 열어줘도, **세션이 탈취되면 어차피 자기 키를 복호화해 가져갈 수 있어**
+    공격자 관점 이득이 제한적이다. (pgsodium TCE는 최신 Supabase에서 사실상 비권장/폐기 방향.)
+  - 저장매체 암호화(at-rest)는 Supabase 인프라가 이미 제공한다.
+  - **대체 방어선**: (a) 본인만 접근하는 RLS, (b) profiles와의 물리적 분리(관리자·일반 select에
+    섞이지 않음), (c) 애플리케이션 규율 — 키는 `@/lib/supabase/server`(서버)에서만 읽고
+    **클라이언트 응답/로그/에러에 원문을 절대 담지 않는다**. select 시 필요한 컬럼만 명시적으로 고른다.
+  - 후속으로 더 강한 보호가 필요하면, service_role 전용 백엔드 경로를 별도로 만들고 그때 Vault 도입을
+    재검토한다(현재 컨벤션 범위를 벗어남).
+- **등록률 통계**는 키 원문 없이 내기 위해, `user_secrets` 변경 시 트리거(`sync_nexon_key_flag`)가
+  `profiles.has_nexon_key`(불리언 파생 플래그)를 동기화한다. 관리자는 이 플래그만 보고 집계한다.
+  (플래그는 본인이 UPDATE로 조작 가능하나 통계 정확도에만 영향 있는 비민감 값이며, 키 변경 시 트리거가
+  다시 올바른 값으로 덮는다.)
+
+### 3) character_boss_selection 기본 정책 — "행 없음 = 전체 선택"
+
+캐릭터별로 실제 잡는 보스를 행으로 저장한다(행 존재 = 선택). **특정 캐릭터에 대해 행이 하나도
+없으면 = "모든 boss_presets 선택"으로 간주**(프로토타입 기본값). 행이 1개라도 생기면 그때부터
+"선택된 보스만" 대상이다. DB는 존재/부재만 저장하고, 이 기본값 해석은 **앱 조회 로직**에서 구현한다.
+(주의: 사용자가 "보스를 하나도 안 잡음"을 명시하려면 별도 표현이 필요하다 — v1은 프로토타입 기본값 우선.)
+
+### 4) 접속 통계 — access_log 테이블 없이 profiles 컬럼으로 집계
+
+관리자 페이지가 요구하는 통계는 **별도 로그 테이블 없이** `profiles`의 세 값으로 전부 낼 수 있어
+v1에서는 `access_log`를 **추가하지 않았다.**
+
+| 통계 | 산출 |
+| --- | --- |
+| 전체 유저 | `count(*) from profiles` |
+| 오늘 접속 | `last_access_at >= (오늘 00:00 KST)` 카운트 |
+| 이번 주 신규 가입 | `created_at >= (이번 주 시작 KST)` 카운트 |
+| API 키 등록률 | `has_nexon_key = true` 비율 |
+| 최근 접속 목록 | `order by last_access_at desc limit N` |
+
+`last_access_at`는 앱이 접속 시 본인 profiles를 UPDATE해 갱신한다(RLS 본인 update 허용). 로그인
+후 서버에서 갱신하면 된다.
+
+**트레이드오프**: `last_access_at`는 "마지막 1회"만 담아 DAU 추세/방문 이력 같은 **시계열 분석은
+불가**하다. 나중에 일별 접속 추이·리텐션이 필요해지면 그때 최소 형태의 `access_log(user_id, at)`
+(+ 본인 insert만 허용, 관리자 집계용 select)를 추가하는 편이 낫다. 지금 요구된 5개 지표에는
+불필요한 쓰기·저장 비용이라 도입을 보류했다.
+
+## 신규 가입 트리거
+
+`auth.users` INSERT → `handle_new_user`(SECURITY DEFINER)가 `profiles`를 자동 생성(`role='user'`,
+닉네임은 `raw_user_meta_data`의 nickname/name/full_name → 없으면 이메일 로컬파트). daily/weekly는
+코드 프리셋이고 완료기록은 period_key 모델이라 **per-user 시드 INSERT는 불필요**(프로필만 생성).
+
+## 완료 토글 흐름 (앱 구현 가이드 — 서버에서)
+
+1. 항목의 `reset_type`을 얻는다: daily/weekly는 `presets.ts`(코드), boss는 `boss_presets.reset_type`(DB).
+2. **서버에서** `currentPeriodKey(reset_type)` (`src/lib/period.ts`)로 `period_key`를 계산한다.
+   클라이언트가 보낸 `period_key`/`user_id`는 신뢰하지 않는다.
+3. 완료 = `completions` INSERT `... on conflict (user_id, character_ocid, item_id, period_key) do nothing`(멱등).
+   해제 = 해당 4-튜플 DELETE.
+4. 완료 판단 = "현재 `period_key`와 일치하는 행 존재 여부". 새 주기가 되면 키가 달라져 자동 미완료
+   → **리셋 배치/크론 불필요**.
+
+## period_key 포맷 (검증됨, `src/lib/period.ts` 단일 진실)
+
+- daily → `d-<KST epochDay>` (예: `d-20636`)
+- weekly_mon → `weekly_mon-<직전 월요일 epochDay>` (예: `weekly_mon-20633`)
+- weekly_thu → `weekly_thu-<직전 목요일 epochDay>` (예: `weekly_thu-20636`)
+
+숫자는 KST 기준으로 매일 증가하므로 마이그레이션/검증에 하드코딩하지 말고 항상 `currentPeriodKey()`로
+계산한다. DB는 `period_key`를 text로 저장할 뿐 계산하지 않는다.
+
+## 앱 코드에서 주의할 점
+
+- 넥슨 키(`user_secrets.nexon_api_key`)는 **서버에서만** 읽고, 응답/로그/에러에 원문을 담지 않는다.
+  profiles select 시 키 컬럼이 없음을 전제로 하되(분리됨), 습관적으로 필요한 컬럼만 명시한다.
+- `period_key`/`user_id`는 항상 서버에서 확정한다(클라이언트 입력 불신).
+- `category`(표시 그룹: daily/weekly/boss)와 `reset_type`(초기화 주기: daily/weekly_mon/weekly_thu)은
+  다른 개념이다. 완료·초기화 판정은 반드시 `reset_type`으로.
+- 보스 목록은 `boss_presets`(DB)에서 조회해 daily/weekly 코드 프리셋과 합쳐 `CATEGORY_ORDER` 순으로 표시.
+- 인증/세션은 기존 `src/lib/supabase/{server,client,middleware}.ts` + `src/middleware.ts`를 재사용한다.
