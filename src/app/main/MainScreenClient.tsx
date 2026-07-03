@@ -1,27 +1,42 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { Check, ChevronRight, RefreshCw, Settings as SettingsIcon } from "lucide-react";
+import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
+import { Switch } from "@/components/ui/Switch";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
 import { ChecklistSection } from "@/components/checklist/ChecklistSection";
 import { ChecklistRow } from "@/components/checklist/ChecklistRow";
 import { DurationInput } from "@/components/checklist/DurationInput";
+import { BossEditDialog } from "@/components/checklist/BossEditDialog";
 import { CATEGORY_LABEL, CATEGORY_ORDER, type ChecklistCategory } from "@/lib/presets";
 import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
 import { saveDuration, toggleCompletion } from "./actions";
+import { saveBossSelection } from "./boss-selection-actions";
+import { deleteAccountAction, resetAllCompletions, signOutAction } from "./settings-actions";
 
 export interface ChecklistItemDTO {
   id: string;
   name: string;
   category: ChecklistCategory;
   resetType: ResetType;
+}
+
+export interface BossPresetDTO {
+  id: string;
+  name: string;
+  resetType: ResetType;
+  reqLevel: number | null;
+  symbolType: "arcane" | "authentic" | null;
+  reqForce: number | null;
+  /** 권장 헥사 스탯. 캐릭터의 헥사 데이터를 아직 연동하지 않아 판정/표시에는 쓰지 않는다(TODO). */
+  recHexa: number | null;
 }
 
 export interface CharacterDTO {
@@ -40,10 +55,14 @@ export interface CharacterDTO {
 interface MainScreenClientProps {
   items: ChecklistItemDTO[];
   characters: CharacterDTO[];
+  bossPresets: BossPresetDTO[];
   durations: Record<string, number>;
   nexonKeyRegistered: boolean;
   nexonKeyMasked: string | null;
 }
+
+const HIDE_DONE_KEY = "mapletool:hideDone";
+const AUTO_SORT_KEY = "mapletool:autoSort";
 
 interface HoverStat {
   status: "loading" | "loaded" | "error";
@@ -80,6 +99,7 @@ function formatMinutes(total: number): string | null {
 export function MainScreenClient({
   items,
   characters,
+  bossPresets,
   durations: initialDurations,
   nexonKeyRegistered,
   nexonKeyMasked,
@@ -96,15 +116,6 @@ export function MainScreenClient({
   }, [characters]);
 
   const [selectedWorld, setSelectedWorld] = useState<string | null>(worlds[0] ?? null);
-  const worldChars = useMemo(
-    () => characters.filter((c) => c.world === selectedWorld),
-    [characters, selectedWorld]
-  );
-  const [selectedOcid, setSelectedOcid] = useState<string | null>(worldChars[0]?.ocid ?? null);
-  const selectedChar = useMemo(
-    () => characters.find((c) => c.ocid === selectedOcid) ?? null,
-    [characters, selectedOcid]
-  );
 
   // 완료 상태(캐릭터별 · 낙관적). key: `${ocid}::${itemId}`
   const [doneMap, setDoneMap] = useState<Record<string, boolean>>(() => {
@@ -118,17 +129,86 @@ export function MainScreenClient({
   const [durations, setDurations] = useState<Record<string, number>>(initialDurations);
   const [toastError, setToastError] = useState<string | null>(null);
 
+  // 캐릭터별 "실제로 잡는" 주간 보스 선택(낙관적). null = 전체 선택(행 없음).
+  const [bossSelectionMap, setBossSelectionMap] = useState<Record<string, string[] | null>>(() => {
+    const init: Record<string, string[] | null> = {};
+    for (const c of characters) init[c.ocid] = c.bossItemIds;
+    return init;
+  });
+  const [bossEditOcid, setBossEditOcid] = useState<string | null>(null);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // 표시 설정(설정 모달 "표시 설정" 블록) — 계정 간 동기화가 필요 없는 순수 표시 옵션이라
+  // localStorage 에만 저장한다(LoginForm 의 "아이디 저장" 프리필과 동일 패턴: 마운트 후 hydrate).
+  const [hideDone, setHideDoneState] = useState(false);
+  const [autoSort, setAutoSortState] = useState(true);
+
+  useEffect(() => {
+    const savedHideDone = window.localStorage.getItem(HIDE_DONE_KEY);
+    if (savedHideDone !== null) setHideDoneState(savedHideDone === "1");
+    const savedAutoSort = window.localStorage.getItem(AUTO_SORT_KEY);
+    if (savedAutoSort !== null) setAutoSortState(savedAutoSort === "1");
+  }, []);
+
+  function setHideDone(next: boolean) {
+    setHideDoneState(next);
+    window.localStorage.setItem(HIDE_DONE_KEY, next ? "1" : "0");
+  }
+
+  function setAutoSort(next: boolean) {
+    setAutoSortState(next);
+    window.localStorage.setItem(AUTO_SORT_KEY, next ? "1" : "0");
+  }
+
+  // 완료 기록 초기화(#8) / 로그아웃·회원탈퇴(#10) 확인 다이얼로그 + pending 상태.
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [deleteAccountConfirmOpen, setDeleteAccountConfirmOpen] = useState(false);
+  const [isResetting, startResetTransition] = useTransition();
+  const [isSigningOut, startSignOutTransition] = useTransition();
+  const [isDeletingAccount, startDeleteAccountTransition] = useTransition();
 
   const [hoverOcid, setHoverOcid] = useState<string | null>(null);
   const [popup, setPopup] = useState<{ top: number; left: number } | null>(null);
   const [hoverStats, setHoverStats] = useState<Record<string, HoverStat>>({});
 
+  function bossSelectionFor(char: CharacterDTO): string[] | null {
+    return Object.prototype.hasOwnProperty.call(bossSelectionMap, char.ocid)
+      ? bossSelectionMap[char.ocid]
+      : char.bossItemIds;
+  }
+
   function relevantItemsFor(char: CharacterDTO): ChecklistItemDTO[] {
-    const bossSet = char.bossItemIds === null ? null : new Set(char.bossItemIds);
+    const selection = bossSelectionFor(char);
+    const bossSet = selection === null ? null : new Set(selection);
     return items.filter((i) => i.category !== "boss" || bossSet === null || bossSet.has(i.id));
   }
+
+  function isCharComplete(char: CharacterDTO): boolean {
+    const { done, total } = progressFor(char);
+    return total > 0 && done >= total;
+  }
+
+  const worldCharsBase = useMemo(
+    () => characters.filter((c) => c.world === selectedWorld),
+    [characters, selectedWorld]
+  );
+  const worldChars = useMemo(() => {
+    if (!autoSort) return worldCharsBase;
+    // 전체 완료(daily+weekly+boss 모두 done) 캐릭터만 뒤로 보내고, 그 외 상대 순서는 유지(안정 정렬).
+    return worldCharsBase
+      .map((c, index) => ({ c, index, complete: isCharComplete(c) }))
+      .sort((a, b) => (a.complete === b.complete ? a.index - b.index : a.complete ? 1 : -1))
+      .map((x) => x.c);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCharComplete 는 doneMap/bossSelectionMap 에 의존
+  }, [worldCharsBase, autoSort, doneMap, bossSelectionMap]);
+
+  const [selectedOcid, setSelectedOcid] = useState<string | null>(worldChars[0]?.ocid ?? null);
+  const selectedChar = useMemo(
+    () => characters.find((c) => c.ocid === selectedOcid) ?? null,
+    [characters, selectedOcid]
+  );
 
   function progressFor(char: CharacterDTO) {
     const rel = relevantItemsFor(char);
@@ -204,6 +284,74 @@ export function MainScreenClient({
       });
   }
 
+  /**
+   * 보스 선택 편집(#9) "완료" 콜백. 낙관적으로 선택을 갱신하고, 해제된 보스가 완료 상태였다면
+   * 함께 초기화한 뒤(디자인 스펙) 서버 액션으로 커밋한다. 실패 시 둘 다 롤백.
+   */
+  function handleSaveBossSelection(ocid: string, selectedItemIds: string[]) {
+    // bossSelectionMap 은 마운트 시 모든 캐릭터에 대해 초기화돼 있으므로(state 선언부 참고)
+    // 이 시점엔 항상 해당 ocid 항목이 존재한다.
+    const previousSelection = bossSelectionMap[ocid];
+    const previousIds = previousSelection === null ? bossPresets.map((b) => b.id) : previousSelection;
+    const nextIdSet = new Set(selectedItemIds);
+    const removedIds = previousIds.filter((id) => !nextIdSet.has(id));
+
+    const removedDoneSnapshot: Record<string, boolean> = {};
+    for (const id of removedIds) {
+      const key = `${ocid}::${id}`;
+      removedDoneSnapshot[key] = !!doneMap[key];
+    }
+
+    setBossSelectionMap((m) => ({ ...m, [ocid]: selectedItemIds }));
+    setDoneMap((m) => {
+      const next = { ...m };
+      for (const id of removedIds) delete next[`${ocid}::${id}`];
+      return next;
+    });
+
+    saveBossSelection(ocid, selectedItemIds)
+      .then((result) => {
+        if ("error" in result) {
+          setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
+          setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
+          setToastError(result.error);
+        }
+      })
+      .catch(() => {
+        setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
+        setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
+        setToastError("보스 선택 저장 중 오류가 발생했습니다.");
+      });
+  }
+
+  function handleConfirmReset() {
+    startResetTransition(async () => {
+      const result = await resetAllCompletions();
+      if ("error" in result) {
+        setToastError(result.error);
+        return;
+      }
+      setDoneMap({});
+      setResetConfirmOpen(false);
+      setSettingsOpen(false);
+    });
+  }
+
+  function handleLogout() {
+    startSignOutTransition(async () => {
+      await signOutAction();
+    });
+  }
+
+  function handleConfirmDeleteAccount() {
+    startDeleteAccountTransition(async () => {
+      const result = await deleteAccountAction();
+      if ("error" in result) {
+        setToastError(result.error);
+      }
+    });
+  }
+
   function handleSelectWorld(world: string) {
     setSelectedWorld(world);
     const first = characters.find((c) => c.world === world);
@@ -277,6 +425,8 @@ export function MainScreenClient({
   const hoverChar = hoverOcid ? characters.find((c) => c.ocid === hoverOcid) ?? null : null;
   const hoverStat = hoverOcid ? hoverStats[hoverOcid] : undefined;
   const hoverProgress = hoverChar ? progressFor(hoverChar) : null;
+
+  const bossEditChar = bossEditOcid ? characters.find((c) => c.ocid === bossEditOcid) ?? null : null;
 
   return (
     <div className="relative z-10">
@@ -455,39 +605,64 @@ export function MainScreenClient({
 
               {selectedChar && (
                 <div className="flex flex-col gap-4 border-t border-maple-line-subtle pt-5">
-                  {progressFor(selectedChar).categories.map((cat) => (
-                    <ChecklistSection
-                      key={cat.category}
-                      category={cat.category}
-                      done={cat.done}
-                      total={cat.total}
-                      remainLabel={formatMinutes(cat.remainMinutes)}
-                      totalLabel={formatMinutes(cat.totalMinutes)}
-                      onBulkComplete={() => handleBulkComplete(selectedChar, cat.category)}
-                    >
-                      {cat.items.map((item) => {
-                        const key = `${selectedChar.ocid}::${item.id}`;
-                        return (
-                          <div key={item.id} className="flex items-center gap-1.5">
-                            <ChecklistRow
-                              id={`row-${key}`}
-                              name={item.name}
-                              resetType={item.resetType}
-                              done={!!doneMap[key]}
-                              disabled={!!pendingKeys[key]}
-                              onToggle={() => handleToggle(selectedChar.ocid, item.id)}
-                              className="min-w-0 flex-1"
-                            />
-                            <DurationInput
-                              itemName={item.name}
-                              committedMinutes={durations[item.id] ?? 0}
-                              onSave={(minutes) => handleDurationSave(item.id, minutes)}
-                            />
-                          </div>
-                        );
-                      })}
-                    </ChecklistSection>
-                  ))}
+                  {progressFor(selectedChar).categories.map((cat) => {
+                    const visibleItems = hideDone
+                      ? cat.items.filter((item) => !doneMap[`${selectedChar.ocid}::${item.id}`])
+                      : cat.items;
+                    return (
+                      <ChecklistSection
+                        key={cat.category}
+                        category={cat.category}
+                        done={cat.done}
+                        total={cat.total}
+                        remainLabel={formatMinutes(cat.remainMinutes)}
+                        totalLabel={formatMinutes(cat.totalMinutes)}
+                        onBulkComplete={() => handleBulkComplete(selectedChar, cat.category)}
+                        extraContent={
+                          cat.category === "boss" ? (
+                            <div className="px-1 pb-2.5">
+                              <button
+                                type="button"
+                                onClick={() => setBossEditOcid(selectedChar.ocid)}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5 text-[11.5px] font-extrabold text-maple-text-secondary transition-colors hover:bg-maple-surface-sunken"
+                              >
+                                <ListChecks className="h-[13px] w-[13px]" aria-hidden="true" />
+                                이 캐릭터가 잡는 보스 편집
+                              </button>
+                            </div>
+                          ) : undefined
+                        }
+                      >
+                        {cat.total > 0 && visibleItems.length === 0 ? (
+                          <p className="px-1 py-3 text-xs font-semibold text-maple-success-text">
+                            완료한 숙제만 있어요. 설정에서 &ldquo;완료 항목 숨기기&rdquo;를 꺼서 다시 볼 수 있어요.
+                          </p>
+                        ) : (
+                          visibleItems.map((item) => {
+                            const key = `${selectedChar.ocid}::${item.id}`;
+                            return (
+                              <div key={item.id} className="flex items-center gap-1.5">
+                                <ChecklistRow
+                                  id={`row-${key}`}
+                                  name={item.name}
+                                  resetType={item.resetType}
+                                  done={!!doneMap[key]}
+                                  disabled={!!pendingKeys[key]}
+                                  onToggle={() => handleToggle(selectedChar.ocid, item.id)}
+                                  className="min-w-0 flex-1"
+                                />
+                                <DurationInput
+                                  itemName={item.name}
+                                  committedMinutes={durations[item.id] ?? 0}
+                                  onSave={(minutes) => handleDurationSave(item.id, minutes)}
+                                />
+                              </div>
+                            );
+                          })
+                        )}
+                      </ChecklistSection>
+                    );
+                  })}
                 </div>
               )}
             </>
@@ -611,6 +786,61 @@ export function MainScreenClient({
           <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
             <NexonKeyCard registered={nexonKeyRegistered} maskedKey={nexonKeyMasked} />
           </div>
+
+          <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
+            <h3 className="text-sm font-extrabold text-maple-text-primary">표시 설정</h3>
+            <div className="mt-3 flex flex-col">
+              <div className="flex items-center gap-3.5 py-1">
+                <div className="flex-1">
+                  <div className="text-sm font-semibold text-maple-text-primary">완료 항목 숨기기</div>
+                  <div className="mt-0.5 text-[11.5px] text-maple-text-muted">완료한 숙제를 목록에서 가립니다.</div>
+                </div>
+                <Switch checked={hideDone} onChange={setHideDone} ariaLabel="완료 항목 숨기기" />
+              </div>
+              <div className="h-px bg-maple-line-subtle" />
+              <div className="flex items-center gap-3.5 py-1">
+                <div className="flex-1">
+                  <div className="text-sm font-semibold text-maple-text-primary">완료 캐릭터 뒤로 정렬</div>
+                  <div className="mt-0.5 text-[11.5px] text-maple-text-muted">숙제를 끝낸 캐릭터를 슬라이더 뒤로 보냅니다.</div>
+                </div>
+                <Switch checked={autoSort} onChange={setAutoSort} ariaLabel="완료 캐릭터 뒤로 정렬" />
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
+            <h3 className="text-sm font-extrabold text-maple-text-primary">완료 기록 초기화</h3>
+            <div className="mt-3 flex items-center gap-3">
+              <p className="flex-1 text-xs leading-relaxed text-maple-text-muted">
+                모든 캐릭터의 이번 주기 완료 기록을 지웁니다.
+              </p>
+              <Button variant="danger" size="sm" onClick={() => setResetConfirmOpen(true)}>
+                초기화
+              </Button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
+            <h3 className="text-sm font-extrabold text-maple-text-primary">계정</h3>
+            <div className="mt-3 flex flex-col">
+              <div className="flex items-center gap-3 py-1">
+                <p className="flex-1 text-xs leading-relaxed text-maple-text-muted">이 기기에서 로그아웃합니다.</p>
+                <Button variant="secondary" size="sm" pending={isSigningOut} onClick={handleLogout}>
+                  로그아웃
+                </Button>
+              </div>
+              <div className="h-px bg-maple-line-subtle" />
+              <div className="flex items-center gap-3 py-1 pt-2.5">
+                <p className="flex-1 text-xs leading-relaxed text-maple-text-muted">
+                  계정과 등록된 API 키, 캐릭터 기록을 모두 삭제합니다.
+                </p>
+                <Button variant="danger" size="sm" onClick={() => setDeleteAccountConfirmOpen(true)}>
+                  회원탈퇴
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="flex justify-end">
             <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
               닫기
@@ -618,6 +848,49 @@ export function MainScreenClient({
           </div>
         </div>
       </Dialog>
+
+      <Dialog
+        open={resetConfirmOpen}
+        title="완료 기록을 초기화할까요?"
+        description="현재 주기의 모든 완료 체크가 사라집니다. 이 작업은 되돌릴 수 없습니다."
+        onClose={() => setResetConfirmOpen(false)}
+        widthClassName="max-w-[420px]"
+      >
+        <div className="flex justify-end gap-2.5">
+          <Button variant="ghost" onClick={() => setResetConfirmOpen(false)}>
+            취소
+          </Button>
+          <Button variant="danger" pending={isResetting} onClick={handleConfirmReset}>
+            초기화
+          </Button>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={deleteAccountConfirmOpen}
+        title="정말 탈퇴하시겠어요?"
+        description="계정, 등록된 API 키, 모든 캐릭터의 숙제 기록이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다."
+        onClose={() => setDeleteAccountConfirmOpen(false)}
+        widthClassName="max-w-[420px]"
+      >
+        <div className="flex justify-end gap-2.5">
+          <Button variant="ghost" onClick={() => setDeleteAccountConfirmOpen(false)}>
+            취소
+          </Button>
+          <Button variant="danger" pending={isDeletingAccount} onClick={handleConfirmDeleteAccount}>
+            탈퇴
+          </Button>
+        </div>
+      </Dialog>
+
+      <BossEditDialog
+        open={bossEditOcid !== null}
+        character={bossEditChar ? { ocid: bossEditChar.ocid, name: bossEditChar.name, level: bossEditChar.level } : null}
+        bossPresets={bossPresets}
+        initialSelected={bossEditChar ? bossSelectionFor(bossEditChar) : null}
+        onClose={() => setBossEditOcid(null)}
+        onSave={handleSaveBossSelection}
+      />
     </div>
   );
 }

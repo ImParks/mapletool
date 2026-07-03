@@ -7,7 +7,7 @@ import { currentPeriodKey } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
 import { Logo } from "@/components/ui/Logo";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
-import { MainScreenClient, type CharacterDTO, type ChecklistItemDTO } from "./MainScreenClient";
+import { MainScreenClient, type BossPresetDTO, type CharacterDTO, type ChecklistItemDTO } from "./MainScreenClient";
 
 // 사용자별 넥슨/완료 데이터를 담는 페이지라 항상 요청마다 새로 렌더해야 한다. cookies() 사용이
 // Next.js의 동적 렌더링을 암묵적으로 트리거하긴 하지만(Supabase env 미설정 시 그 분기 이전에
@@ -177,6 +177,17 @@ export default async function MainPage() {
     category: i.category,
     resetType: i.reset_type,
   }));
+  // 보스 선택 편집 다이얼로그(#9)에서 레벨 잠금/비권장 배지를 계산하려면 req_level/symbol_type/
+  // req_force 가 필요하다(rec_hexa 는 캐릭터 헥사 스탯 데이터가 없어 판정에 쓰지 않는다 — 정보 표시도 생략).
+  const bossPresetDTOs: BossPresetDTO[] = bossPresets.map((b) => ({
+    id: b.id,
+    name: b.name,
+    resetType: b.reset_type,
+    reqLevel: b.req_level,
+    symbolType: b.symbol_type,
+    reqForce: b.req_force,
+    recHexa: b.rec_hexa,
+  }));
 
   const doneByOcid = new Map<string, Set<string>>();
   for (const row of (completionsResult.data ?? []) as CompletionRow[]) {
@@ -218,6 +229,7 @@ export default async function MainPage() {
       <MainScreenClient
         items={items}
         characters={characters}
+        bossPresets={bossPresetDTOs}
         durations={durations}
         nexonKeyRegistered={Boolean(secretRow?.nexon_key_valid)}
         nexonKeyMasked={maskNexonKey(apiKey)}

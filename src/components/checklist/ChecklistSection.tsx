@@ -23,6 +23,8 @@ interface ChecklistSectionProps {
   remainLabel: string | null;
   totalLabel: string | null;
   onBulkComplete: () => void;
+  /** 남은시간 안내와 항목 목록 사이에 끼워 넣을 부가 컨텐츠(예: 보스 섹션의 "보스 편집" 버튼). */
+  extraContent?: ReactNode;
   children: ReactNode;
 }
 
@@ -34,6 +36,7 @@ export function ChecklistSection({
   remainLabel,
   totalLabel,
   onBulkComplete,
+  extraContent,
   children,
 }: ChecklistSectionProps) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -77,6 +80,8 @@ export function ChecklistSection({
           </span>
         </div>
       )}
+
+      {extraContent}
 
       <div className="mt-2 flex flex-col gap-1">
         {total === 0 ? (
