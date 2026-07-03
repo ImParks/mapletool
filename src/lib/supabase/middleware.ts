@@ -40,8 +40,10 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // 인증 가드: /main(및 하위 경로)은 로그인해야 접근 가능. 보호 라우트가 늘면 이 배열에 추가한다.
-  const protectedPathPrefixes = ["/main"];
+  // 인증 가드: /main, /admin(및 하위 경로)은 로그인해야 접근 가능. 보호 라우트가 늘면 이 배열에
+  // 추가한다. 이건 "로그인 여부"만 확인하는 1차 방어이고, /admin의 진짜 방어선(role='admin' 확인)은
+  // 각 서버 컴포넌트/서버 액션 안에 있다(src/app/admin/page.tsx, boss-preset-actions.ts).
+  const protectedPathPrefixes = ["/main", "/admin"];
   const pathname = request.nextUrl.pathname;
   const isProtectedRoute = protectedPathPrefixes.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)

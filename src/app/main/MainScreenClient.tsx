@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon } from "lucide-react";
+import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon, Shield } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { IconButton } from "@/components/ui/IconButton";
@@ -59,6 +59,8 @@ interface MainScreenClientProps {
   durations: Record<string, number>;
   nexonKeyRegistered: boolean;
   nexonKeyMasked: string | null;
+  /** profiles.role === 'admin' 인 로그인 세션일 때만 true. 관리자 페이지 진입 아이콘 노출 여부. */
+  isAdmin: boolean;
 }
 
 const HIDE_DONE_KEY = "mapletool:hideDone";
@@ -103,6 +105,7 @@ export function MainScreenClient({
   durations: initialDurations,
   nexonKeyRegistered,
   nexonKeyMasked,
+  isAdmin,
 }: MainScreenClientProps) {
   const router = useRouter();
   const [, startRefresh] = useTransition();
@@ -439,6 +442,11 @@ export function MainScreenClient({
           <IconButton ariaLabel="캐릭터 동기화" onClick={handleSync}>
             <RefreshCw className={cn("h-[18px] w-[18px]", isSyncing && "animate-maple-spin")} aria-hidden="true" />
           </IconButton>
+          {isAdmin && (
+            <IconButton ariaLabel="관리자 페이지" onClick={() => router.push("/admin")}>
+              <Shield className="h-[18px] w-[18px]" aria-hidden="true" />
+            </IconButton>
+          )}
           <IconButton ariaLabel="설정" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon className="h-[18px] w-[18px]" aria-hidden="true" />
           </IconButton>

@@ -45,6 +45,9 @@ interface BossSelectionRow {
   character_ocid: string;
   item_id: string;
 }
+interface ProfileRoleRow {
+  role: string;
+}
 
 /** 넥슨 키 원문을 마스킹해 표시용 문자열만 만든다. 원문은 이 함수 밖으로(클라이언트로) 전달하지 않는다. */
 function maskNexonKey(key: string): string {
@@ -145,19 +148,24 @@ export default async function MainPage() {
   const weeklyMonKey = currentPeriodKey("weekly_mon");
   const weeklyThuKey = currentPeriodKey("weekly_thu");
 
-  const [bossPresetsResult, completionsResult, durationsResult, bossSelectionResult] = await Promise.all([
-    supabase
-      .from("boss_presets")
-      .select("id,name,reset_type,req_level,symbol_type,req_force,rec_hexa")
-      .order("list_order"),
-    supabase
-      .from("completions")
-      .select("character_ocid,item_id,period_key")
-      .eq("user_id", user.id)
-      .in("period_key", [dailyKey, weeklyMonKey, weeklyThuKey]),
-    supabase.from("quest_durations").select("item_id,minutes").eq("user_id", user.id),
-    supabase.from("character_boss_selection").select("character_ocid,item_id").eq("user_id", user.id),
-  ]);
+  const [bossPresetsResult, completionsResult, durationsResult, bossSelectionResult, profileRoleResult] =
+    await Promise.all([
+      supabase
+        .from("boss_presets")
+        .select("id,name,reset_type,req_level,symbol_type,req_force,rec_hexa")
+        .order("list_order"),
+      supabase
+        .from("completions")
+        .select("character_ocid,item_id,period_key")
+        .eq("user_id", user.id)
+        .in("period_key", [dailyKey, weeklyMonKey, weeklyThuKey]),
+      supabase.from("quest_durations").select("item_id,minutes").eq("user_id", user.id),
+      supabase.from("character_boss_selection").select("character_ocid,item_id").eq("user_id", user.id),
+      // 앱바의 관리자(방패) 아이콘 노출 여부 판정용. 일반 유저에게는 아이콘 자체를 숨긴다
+      // (실제 접근 방어선은 src/app/admin/page.tsx의 role 재확인).
+      supabase.from("profiles").select("role").eq("id", user.id).maybeSingle<ProfileRoleRow>(),
+    ]);
+  const isAdmin = profileRoleResult.data?.role === "admin";
 
   const bossPresetRows = (bossPresetsResult.data ?? []) as BossPresetRow[];
   // reset_type/symbol_type 은 DB check 제약으로 값이 한정돼 있다(마이그레이션 참고).
@@ -233,6 +241,7 @@ export default async function MainPage() {
         durations={durations}
         nexonKeyRegistered={Boolean(secretRow?.nexon_key_valid)}
         nexonKeyMasked={maskNexonKey(apiKey)}
+        isAdmin={isAdmin}
       />
     </div>
   );

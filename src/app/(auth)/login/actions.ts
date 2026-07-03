@@ -29,11 +29,16 @@ export async function loginAction(_prevState: LoginState, formData: FormData): P
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-  if (error) {
+  if (error || !data.user) {
     return { error: "이메일 또는 비밀번호가 올바르지 않습니다." };
   }
+
+  // 관리자 페이지 "최근 접속"(admin_recent_access RPC)이 참조하는 값. RLS가 본인 update를
+  // 이미 허용하므로 별도 권한 작업 없이 갱신 가능(supabase/README.md "앱 코드에서 주의할 점" 참고).
+  // 실패해도 로그인 자체를 막을 이유는 없어 에러는 무시한다(통계 정확도에만 영향).
+  await supabase.from("profiles").update({ last_access_at: new Date().toISOString() }).eq("id", data.user.id);
 
   redirect("/main");
 }
