@@ -12,6 +12,7 @@
 | `migrations/20260702090200_rls_policies.sql` | RLS 활성화 + 정책 + GRANT |
 | `migrations/20260702090300_seed_boss_presets.sql` | 주간 보스 프리셋 b1..b6 시드 |
 | `migrations/20260702090400_delete_own_account.sql` | 회원탈퇴 RPC `delete_own_account()` |
+| `migrations/20260702090500_admin_recent_access.sql` | 관리자 전용 RPC `admin_recent_access(p_limit)` — 최근 접속 목록(마스킹 이메일) |
 
 모두 **멱등**(`create table if not exists`, `create or replace`, `drop policy/trigger if exists`,
 `create index if not exists`, `on conflict do nothing`)이라 재적용해도 안전하다.
@@ -113,7 +114,7 @@ v1에서는 `access_log`를 **추가하지 않았다.**
 | 오늘 접속 | `last_access_at >= (오늘 00:00 KST)` 카운트 |
 | 이번 주 신규 가입 | `created_at >= (이번 주 시작 KST)` 카운트 |
 | API 키 등록률 | `has_nexon_key = true` 비율 |
-| 최근 접속 목록 | `order by last_access_at desc limit N` |
+| 최근 접속 목록 | `select * from admin_recent_access(N)` (마스킹된 이메일 포함, 아래 절 참고) |
 
 `last_access_at`는 앱이 접속 시 본인 profiles를 UPDATE해 갱신한다(RLS 본인 update 허용). 로그인
 후 서버에서 갱신하면 된다.
@@ -170,6 +171,40 @@ v1에서는 `access_log`를 **추가하지 않았다.**
 cascade 로 사라지고 유저 B 데이터는 전혀 건드려지지 않음, `auth.uid()` null 상태 호출은 예외,
 anon 롤은 실행 권한 자체가 없어 차단, 기존 마이그레이션 전체 재적용도 에러 없이 통과.
 
+## 관리자 "최근 접속" 목록 — `admin_recent_access(p_limit)`
+
+관리자 페이지는 각 행에 **마스킹된 이메일 + 상대시간 + 상태 배지**를 요구한다. 그런데 이메일은
+`auth.users.email`에 있고 `profiles`에는 없다. `auth.users`는 PostgREST(Data API)로 노출되지
+않고, 이 앱은 **service_role을 쓰지 않으므로**(anon 키 + RLS만) 일반 세션으로는 다른 유저의
+이메일을 조회할 방법이 없다. `delete_own_account()`와 동일한 패턴으로, **SECURITY DEFINER RPC로
+"관리자에게만" 마스킹된 이메일을 좁게 노출**한다(`20260702090500_admin_recent_access.sql`).
+
+- **반환 컬럼**: `id uuid`, `masked_email text`, `last_access_at timestamptz`. 디자인 목업의
+  "캐릭터 수"는 **포함하지 않는다** — 이 앱은 캐릭터를 DB에 캐시하지 않고 넥슨 OpenAPI를 매 요청
+  조회하므로, 전체 유저의 캐릭터 수를 한 번에 집계할 방법이 없다(알려진 설계 편차). 필요해지면
+  화면에서 유저별로 개별 조회하거나 캐릭터 캐시 테이블을 새로 설계해야 한다.
+- **왜 SECURITY DEFINER인가**: `is_admin()`/`delete_own_account()`와 동일한 이유 — 정의자
+  권한으로 실행돼 `auth.users`(PostgREST 미노출) 조인을 함수 내부에서만 허용하고, 클라이언트에는
+  마스킹된 결과만 반환한다. 이메일 원문은 함수 밖으로 절대 나가지 않는다.
+- **호출자 검사는 함수 내부에서**: 실행 권한(`grant execute`) 자체는 `authenticated` 전체에
+  주지만, 함수 본문 첫 줄에서 `is_admin()`이 아니면 예외를 raise하고 아무 행도 반환하지 않는다
+  (`anon`은 애초에 `grant execute`가 없어 실행 자체가 막힌다 — 이중 방어).
+- **`p_limit`은 1~100으로 clamp**(기본 20, null/범위 밖도 안전한 값으로 보정)해 과도한 조회를 막는다.
+- **이메일 마스킹 규칙**(로컬파트 = `@` 앞부분, 도메인은 그대로 노출):
+  - 로컬파트 길이 2 이하 → 전부 마스킹(`**`)
+  - 로컬파트 길이 3~4 → 앞 2글자 노출 + `****`
+  - 로컬파트 길이 5 이상 → 앞 3글자 노출 + `****`
+  - 예: `me@gmail.com` → `**@gmail.com`, `member@gmail.com` → `mem****@gmail.com`. 로컬파트
+    원문 전체가 그대로 노출되는 경우는 없다(마지막 케이스도 항상 뒤가 `****`로 잘림).
+- 정렬은 `last_access_at desc nulls last`(오래 접속 없는/미접속 유저는 맨 뒤).
+
+로컬 PostgreSQL(auth 스키마 흉내 + `auth.uid()` + `anon`/`authenticated` 롤)에 기존 5개
+마이그레이션 + 이 마이그레이션을 순서대로 적용해 라이브 검증 완료: 일반 유저 A로 호출 시 예외
+raise(행 없음), 관리자 B로 호출 시 A/B 모두 마스킹된 이메일로 반환되고 `last_access_at desc`
+정렬 확인, `p_limit=1`은 1행만, `p_limit=100000`은 100으로 clamp되어 안전, `p_limit<=0`도
+최소 1로 clamp, 2글자 이하 로컬파트(`ab@short.com`)는 전부 마스킹, `anon` 롤은 실행 권한
+자체가 없어 차단, 데이터가 남은 DB에 기존 5개 + 신규 마이그레이션 전체 재적용도 에러 없이 통과.
+
 ## period_key 포맷 (검증됨, `src/lib/period.ts` 단일 진실)
 
 - daily → `d-<KST epochDay>` (예: `d-20636`)
@@ -188,3 +223,6 @@ anon 롤은 실행 권한 자체가 없어 차단, 기존 마이그레이션 전
   다른 개념이다. 완료·초기화 판정은 반드시 `reset_type`으로.
 - 보스 목록은 `boss_presets`(DB)에서 조회해 daily/weekly 코드 프리셋과 합쳐 `CATEGORY_ORDER` 순으로 표시.
 - 인증/세션은 기존 `src/lib/supabase/{server,client,middleware}.ts` + `src/middleware.ts`를 재사용한다.
+- **로그인 성공 시 서버 액션에서 본인 `profiles.last_access_at`을 갱신해야 한다**(아직 미구현,
+  다음 UI 단계에서 처리 예정). 현재는 앱 코드 어디서도 이 컬럼을 UPDATE하지 않아 관리자 페이지의
+  "최근 접속"(`admin_recent_access`)이 실제 데이터를 반영하지 못한다.
