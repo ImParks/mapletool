@@ -3,8 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-
-type ActionResult<T> = T | { error: string };
+import type { ActionResult } from "@/lib/action-result";
 
 /** 로그인 유저의 모든 완료 기록(completions)을 삭제한다(#8 초기화 확인 다이얼로그). */
 export async function resetAllCompletions(): Promise<ActionResult<{ ok: true }>> {

@@ -3,8 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { currentPeriodKey } from "@/lib/period";
-
-type ActionResult<T> = T | { error: string };
+import type { ActionResult } from "@/lib/action-result";
 
 interface ItemIdRow {
   item_id: string;

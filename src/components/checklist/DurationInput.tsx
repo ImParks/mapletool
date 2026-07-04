@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
+import { clampInt } from "@/lib/num";
 
 interface DurationInputProps {
   /** 서버에 커밋된(저장된) 값. 0/미설정이면 입력칸이 비어 있는 것으로 표시. */
@@ -26,10 +27,7 @@ export function DurationInput({ committedMinutes, onSave, itemName }: DurationIn
   const dirty = draft !== baseline;
 
   function commit() {
-    let n = parseInt(draft, 10);
-    if (!Number.isFinite(n) || n < 0) n = 0;
-    if (n > 999) n = 999;
-    onSave(n);
+    onSave(clampInt(draft, 0, 999));
   }
 
   return (

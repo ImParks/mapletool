@@ -1,19 +1,8 @@
 import type { ReactNode } from "react";
 import { Clock, CheckCheck } from "lucide-react";
+import { CATEGORY_BG_CLASS, CATEGORY_TEXT_CLASS } from "@/components/checklist/category-styles";
 import { CATEGORY_LABEL, type ChecklistCategory } from "@/lib/presets";
 import { cn } from "@/lib/cn";
-
-const CATEGORY_TEXT_CLASS: Record<ChecklistCategory, string> = {
-  daily: "text-maple-category-daily",
-  weekly: "text-maple-category-weekly",
-  boss: "text-maple-category-boss",
-};
-
-const CATEGORY_BAR_CLASS: Record<ChecklistCategory, string> = {
-  daily: "bg-maple-category-daily",
-  weekly: "bg-maple-category-weekly",
-  boss: "bg-maple-category-boss",
-};
 
 interface ChecklistSectionProps {
   category: ChecklistCategory;
@@ -66,7 +55,7 @@ export function ChecklistSection({
 
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-maple-surface-inset">
         <div
-          className={cn("h-full rounded-full transition-all duration-280 ease-out", CATEGORY_BAR_CLASS[category])}
+          className={cn("h-full rounded-full transition-all duration-280 ease-out", CATEGORY_BG_CLASS[category])}
           style={{ width: `${pct}%` }}
         />
       </div>

@@ -5,7 +5,7 @@ description: 메이플스토리 컨텐츠의 초기화 주기(일일/주간 퀘�
 
 # 메이플 초기화 주기 & 체크리스트 완료 상태 모델링
 
-mapletool은 일일/주간 퀘스트와 주간 보스의 완료 여부를 체크하는 보조 웹앱이다. 핵심 메커니즘은 `src/lib/period.ts` 에 구현되어 있다. 이 스킬은 **메커니즘**만 다룬다. 어떤 보스/콘텐츠가 일일·주간인지의 **목록**은 패치마다 바뀌므로 절대 여기에 하드코딩하지 말고 `src/lib/presets.ts` 에서만 관리한다.
+mapletool은 일일/주간 퀘스트와 주간 보스의 완료 여부를 체크하는 보조 웹앱이다. 핵심 메커니즘은 `src/lib/period.ts` 에 구현되어 있다. 이 스킬은 **메커니즘**만 다룬다. 어떤 보스/콘텐츠가 일일·주간인지의 **목록**은 패치마다 바뀌므로 절대 여기에 하드코딩하지 말고, daily/weekly 는 `src/lib/presets.ts`(코드 프리셋, id `d1..`/`w1..`), 주간 보스는 DB 테이블 `boss_presets`(관리자 CRUD, 전체 유저 공유)에서만 관리한다.
 
 ## 초기화 규칙 (모든 시각 Asia/Seoul, UTC+9 고정)
 
@@ -38,7 +38,7 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
 
 ## period.ts 실제 구현 요약 (정확한 코드는 `src/lib/period.ts` 참조)
 
-- `kstParts(now)`: `Intl.DateTimeFormat`(locale `"en-CA"`, `timeZone: "Asia/Seoul"`)로 KST 기준 `year`/`month`/`day`/`weekday`를 뽑는다. **`weekday`는 일=0, 월=1, … 토=6** (내부 `weekdayMap`으로 `Sun`→0 … `Sat`→6 변환).
+- `kstParts(now)` (**export 됨** — KST 날짜/요일이 필요한 다른 파일도 Intl 변환을 복제하지 말고 이걸 재사용): `Intl.DateTimeFormat`(locale `"en-CA"`, `timeZone: "Asia/Seoul"`)로 KST 기준 `year`/`month`/`day`/`weekday`를 뽑는다. **`weekday`는 일=0, 월=1, … 토=6** (내부 `weekdayMap`으로 `Sun`→0 … `Sat`→6 변환). 함께 export 되는 `kstMidnight(y,m,d)`는 해당 KST 달력 날짜 00:00의 실제 시각(Date)을 돌려준다(UTC+9 고정 오프셋) — 관리자 통계의 "오늘 00:00 KST 이후" 같은 경계 계산용.
 - `kstDayNumber(now)`: KST 자정 기준 일련번호. `Math.floor(Date.UTC(year, month-1, day) / 86400000)` — UTC epoch day가 아니라 **KST 날짜(year/month/day)를 그대로 UTC 정오 없이 자정으로 본 표시용 일수**다. 같은 KST 달력 날짜면 서버 타임존과 무관하게 같은 값이 나온다.
 - 키 형식 (아래 예시는 모두 **2026-06-23(KST 화요일, dayNum=20627)** 기준 — 코드로 직접 검증 가능):
   - `daily` → `` `d-${dayNum}` `` → `d-20627`

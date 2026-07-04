@@ -4,9 +4,10 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { currentPeriodKey, type ResetType } from "@/lib/period";
 import { findPresetItem } from "@/lib/checklist-data";
+import type { ActionResult } from "@/lib/action-result";
+import { clampInt } from "@/lib/num";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
-type ActionResult<T> = T | { error: string };
 
 /**
  * 항목의 reset_type 을 찾는다: daily/weekly 는 presets.ts(코드), boss 는 boss_presets(DB).
@@ -81,8 +82,7 @@ export async function saveDuration(itemId: string, minutes: number): Promise<Act
   } = await supabase.auth.getUser();
   if (!user) return { error: "로그인이 필요합니다." };
 
-  const safeMinutes = Number.isFinite(minutes) ? minutes : 0;
-  const clamped = Math.min(999, Math.max(0, Math.round(safeMinutes)));
+  const clamped = clampInt(minutes, 0, 999);
 
   const { error } = await supabase
     .from("quest_durations")

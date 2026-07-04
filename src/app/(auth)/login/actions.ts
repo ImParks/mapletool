@@ -15,7 +15,7 @@ function isValidEmail(value: string): boolean {
 
 /**
  * 이메일/비밀번호로 Supabase Auth 로그인을 시도한다. 성공 시 세션 쿠키가 설정되고
- * `/main`(임시 자리표시 화면 — 다음 단계에서 실제 메인 화면으로 교체 예정)으로 리다이렉트한다.
+ * 접속 시각(profiles.last_access_at)을 갱신한 뒤 `/main`으로 리다이렉트한다.
  */
 export async function loginAction(_prevState: LoginState, formData: FormData): Promise<LoginState> {
   const email = String(formData.get("email") ?? "").trim();

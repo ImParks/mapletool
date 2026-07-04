@@ -17,7 +17,11 @@ export class MapleApiError extends Error {
 async function request<T>(
   apiKey: string,
   path: string,
-  params?: Record<string, string | undefined>
+  params?: Record<string, string | undefined>,
+  // 엔드포인트 특성에 맞는 캐시 주기(초). 기본 60초 — 자주 안 바뀌는 응답(기본정보 등)은
+  // 호출부에서 더 길게 지정해 레이트리밋(개발단계 5건/초) 소모를 줄인다.
+  // 캐시 키에는 URL과 헤더(x-nxopen-api-key)가 포함되므로 사용자 간 응답이 섞이지 않는다.
+  revalidate: number = 60
 ): Promise<T> {
   const url = new URL(BASE_URL + path);
   if (params) {
@@ -28,8 +32,7 @@ async function request<T>(
 
   const res = await fetch(url.toString(), {
     headers: { "x-nxopen-api-key": apiKey },
-    // 넥슨 데이터는 자주 바뀌지 않으므로 짧게 캐싱
-    next: { revalidate: 60 },
+    next: { revalidate },
   });
 
   if (!res.ok) {
@@ -215,12 +218,18 @@ export function getOcid(apiKey: string, characterName: string) {
   });
 }
 
-/** 캐릭터 기본 정보 (2023-12-21 데이터부터 조회 가능). date는 KST YYYY-MM-DD. */
+/**
+ * 캐릭터 기본 정보 (2023-12-21 데이터부터 조회 가능). date는 KST YYYY-MM-DD.
+ * 넥슨 데이터 자체가 일 단위 스냅샷이라 1시간 캐시 — 캐릭터가 많은 계정의 메인 화면 진입 시
+ * 레이트리밋(개발단계 5건/초) 소모를 줄인다(레벨 등 최신값은 character/list 쪽 60초 캐시가 담당).
+ */
 export function getCharacterBasic(apiKey: string, ocid: string, date?: string) {
-  return request<CharacterBasic>(apiKey, "/maplestory/v1/character/basic", {
-    ocid,
-    date,
-  });
+  return request<CharacterBasic>(
+    apiKey,
+    "/maplestory/v1/character/basic",
+    { ocid, date },
+    3600
+  );
 }
 
 /** 캐릭터 종합 스탯 */

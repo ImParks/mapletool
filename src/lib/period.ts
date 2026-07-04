@@ -6,8 +6,12 @@
 
 export type ResetType = "daily" | "weekly_mon" | "weekly_thu";
 
-/** 주어진 시각을 KST 기준 연/월/일/요일로 변환 */
-function kstParts(now: Date) {
+/**
+ * 주어진 시각을 KST 기준 연/월/일/요일로 변환한다(일=0, 월=1, … 토=6).
+ * 시간대 변환 로직이 여러 파일에 복제되는 것을 막기 위해 export 한다 —
+ * KST 날짜/요일이 필요한 곳은 Intl 변환을 새로 만들지 말고 이 함수를 재사용한다.
+ */
+export function kstParts(now: Date) {
   const fmt = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
     year: "numeric",
@@ -41,6 +45,15 @@ function kstParts(now: Date) {
 function kstDayNumber(now: Date): number {
   const { year, month, day } = kstParts(now);
   return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+}
+
+/**
+ * 지정한 KST 달력 날짜의 00:00 에 해당하는 실제 시각(Date)을 반환한다.
+ * KST 는 서머타임이 없어 항상 UTC+9 고정이므로 단순 오프셋 계산으로 정확하다.
+ * (관리자 통계의 "오늘 00:00 KST 이후 접속" 같은 경계 계산에 사용.)
+ */
+export function kstMidnight(year: number, month: number, day: number): Date {
+  return new Date(Date.UTC(year, month - 1, day) - 9 * 60 * 60 * 1000);
 }
 
 /**

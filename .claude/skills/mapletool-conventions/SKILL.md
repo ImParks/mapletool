@@ -13,24 +13,36 @@ mapletool은 넥슨 메이플스토리 OpenAPI로 캐릭터/스탯을 조회하�
 - **Supabase** (`@supabase/ssr` ^0.5.2, `@supabase/supabase-js` ^2.45.4) — 인증 + DB
 - **Tailwind CSS 3.4.17** (devDependency)
 - 경로 별칭: **`@/*` → `./src/*`** (예: `import { getCharacterList } from "@/lib/maple"`)
-- 명령: `npm run dev` / `npm run build`(타입체크 포함) / `npm run lint`(= `next lint`). **테스트 프레임워크 미설정** — 없는 테스트를 실행하려 하지 말고, 검증은 lint/build로 한다. 테스트가 필요하면 먼저 합의 후 추가.
+- 명령: `npm run dev` / `npm run build`(타입체크 포함) / `npm run lint`(= `eslint .`, flat config `eslint.config.mjs` — next/core-web-vitals + next/typescript) / `npm run typecheck`(= `tsc --noEmit`). **테스트 프레임워크 미설정** — 없는 테스트를 실행하려 하지 말고, 검증은 lint/typecheck/build로 한다. 테스트가 필요하면 먼저 합의 후 추가.
 
 ## 폴더 구조
 
 ```
 src/
-  app/                 # App Router (페이지/레이아웃/라우트). 아직 없음 — 여기 새로 만든다.
-    api/.../route.ts   # Route Handler (넥슨 호출 등 서버 작업)
-  components/          # 재사용 UI 컴포넌트 (필요 시 생성)
+  app/
+    (auth)/            # 랜딩(/)·로그인·회원가입·비밀번호찾기 (라우트 그룹, 공통 중앙정렬 레이아웃)
+    main/              # 메인 화면(월드/캐릭터/체크리스트) + 서버 액션들(actions.ts 등)
+    admin/             # 관리자 페이지(role='admin' 게이트) + boss-preset-actions.ts
+    api/characters/[ocid]/stats/route.ts  # 호버/보스편집용 스탯 지연 조회 Route Handler
+    layout.tsx / globals.css / manifest.ts
+  components/
+    ui/                # Button·Input·Checkbox·Switch·Card·Badge·Dialog·IconButton·Logo
+    checklist/         # ChecklistSection·ChecklistRow·DurationInput·BossEditDialog·category-styles
+    settings/          # NexonKeyCard
+    CenteredNotice.tsx # env미설정/키미등록 등 안내 화면 공용
   lib/
     maple.ts           # 넥슨 OpenAPI 클라이언트 — ⚠️ 서버 전용 (apiKey로 fetch)
-    period.ts          # 초기화 주기 키 계산 (KST). 순수 모듈
-    presets.ts         # 신규 가입 기본 체크리스트. 순수 모듈
+    period.ts          # 초기화 주기 키 + KST 공용 헬퍼(kstParts/kstMidnight). 순수 모듈
+    presets.ts         # daily/weekly 코드 프리셋(보스는 DB boss_presets). 순수 모듈
+    checklist-data.ts  # 항목 병합/필터 순수 계산 (서버에서 사용)
+    scheduler-state.ts # 넥슨 스케줄러 응답 정규화 (순수 모듈, 자동 동기화 기능용 토대)
+    action-result.ts / async.ts / num.ts / cn.ts / stats-client.ts  # 공용 유틸
     supabase/
       client.ts        # 브라우저용 createClient ("use client")
       server.ts        # 서버용 createClient (async) + isSupabaseConfigured()
-      middleware.ts    # updateSession (세션 쿠키 갱신)
+      middleware.ts    # updateSession (세션 쿠키 갱신 + /main·/admin 로그인 가드)
   middleware.ts        # updateSession 호출 + matcher
+supabase/migrations/   # DB 스키마·RLS·RPC (supabase/README.md가 단일 진실)
 ```
 
 도메인 로직(넥슨/주기/프리셋)은 `src/lib`에 둔다. 화면은 `src/app`(+`src/components`).

@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
 import type { BossPresetDTO } from "@/app/main/MainScreenClient";
 import { cn } from "@/lib/cn";
+import { fetchCharacterStats } from "@/lib/stats-client";
 
 interface BossStatsState {
   status: "idle" | "loading" | "loaded" | "error";
@@ -44,19 +45,14 @@ export function BossEditDialog({ open, character, bossPresets, initialSelected, 
     setStats({ status: "loading" });
 
     let cancelled = false;
-    fetch(`/api/characters/${character.ocid}/stats`)
-      .then((res) => res.json())
-      .then((data: { arcaneForce?: number; authenticForce?: number; error?: string }) => {
-        if (cancelled) return;
-        if (data.error) {
-          setStats({ status: "error" });
-        } else {
-          setStats({ status: "loaded", arcaneForce: data.arcaneForce ?? 0, authenticForce: data.authenticForce ?? 0 });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setStats({ status: "error" });
-      });
+    fetchCharacterStats(character.ocid).then((result) => {
+      if (cancelled) return;
+      setStats(
+        result
+          ? { status: "loaded", arcaneForce: result.arcaneForce, authenticForce: result.authenticForce }
+          : { status: "error" }
+      );
+    });
 
     return () => {
       cancelled = true;

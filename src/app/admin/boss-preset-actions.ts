@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import type { ActionResult } from "@/lib/action-result";
+import { clampInt } from "@/lib/num";
 
-type ActionResult<T> = T | { error: string };
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 type AdminAuthResult =
@@ -31,11 +32,6 @@ async function requireAdmin(): Promise<AdminAuthResult> {
   if (profile?.role !== "admin") return { ok: false, error: "관리자만 사용할 수 있습니다." };
 
   return { ok: true, supabase, userId: user.id };
-}
-
-function clampInt(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
 export interface BossPresetFields {

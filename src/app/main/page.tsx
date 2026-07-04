@@ -1,11 +1,11 @@
-import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { getCharacterBasic, getCharacterList, MapleApiError } from "@/lib/maple";
 import { buildAllItems, type BossPreset } from "@/lib/checklist-data";
+import { mapWithConcurrency } from "@/lib/async";
 import { currentPeriodKey } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
-import { Logo } from "@/components/ui/Logo";
+import { CenteredNotice } from "@/components/CenteredNotice";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
 import { MainScreenClient, type BossPresetDTO, type CharacterDTO, type ChecklistItemDTO } from "./MainScreenClient";
 
@@ -53,18 +53,6 @@ interface ProfileRoleRow {
 function maskNexonKey(key: string): string {
   const last4 = key.slice(-4);
   return `${"•".repeat(12)}${last4}`;
-}
-
-function CenteredNotice({ children }: { children: ReactNode }) {
-  return (
-    <div className="relative min-h-screen w-full overflow-x-hidden">
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0" style={{ background: "var(--bg-glow)" }} />
-      <div className="relative z-10 flex min-h-screen flex-col items-center justify-center gap-6 px-5 py-10">
-        <Logo size="lg" />
-        <div className="w-full max-w-[420px]">{children}</div>
-      </div>
-    </div>
-  );
 }
 
 export default async function MainPage() {
@@ -130,18 +118,18 @@ export default async function MainPage() {
     );
   }
 
-  // 계정 캐릭터별 character_image 를 병렬로 보강(일반적인 계정 규모 가정, 넥슨 개발단계 5건/초
-  // 제한을 크게 넘지 않는다). 개별 캐릭터 조회가 실패해도 전체 화면을 막지 않고 이미지만 비운다.
-  const basics = await Promise.all(
-    accountChars.map(async (c) => {
-      try {
-        const basic = await getCharacterBasic(apiKey, c.ocid);
-        return { ocid: c.ocid, imageUrl: basic.character_image ?? null };
-      } catch {
-        return { ocid: c.ocid, imageUrl: null };
-      }
-    })
-  );
+  // 계정 캐릭터별 character_image 보강. 넥슨 개발단계 키는 초당 5건 제한이라 캐릭터가 많은
+  // 계정(수십 개)에서 무제한 병렬 호출은 429 를 유발한다 — 동시성을 5로 제한하고, basic 응답은
+  // maple.ts 에서 길게 캐시(1시간)해 반복 진입 시 대부분 캐시로 흡수한다.
+  // 개별 캐릭터 조회가 실패해도 전체 화면을 막지 않고 이미지만 비운다.
+  const basics = await mapWithConcurrency(accountChars, 5, async (c) => {
+    try {
+      const basic = await getCharacterBasic(apiKey, c.ocid);
+      return { ocid: c.ocid, imageUrl: basic.character_image ?? null };
+    } catch {
+      return { ocid: c.ocid, imageUrl: null };
+    }
+  });
   const imageByOcid = new Map(basics.map((b) => [b.ocid, b.imageUrl]));
 
   const dailyKey = currentPeriodKey("daily");

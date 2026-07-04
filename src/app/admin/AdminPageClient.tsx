@@ -9,6 +9,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { Logo } from "@/components/ui/Logo";
 import { cn } from "@/lib/cn";
+import { clampInt } from "@/lib/num";
 import { addBossPreset, updateBossPreset, type BossPresetFields } from "./boss-preset-actions";
 
 export interface AdminStatDTO {
@@ -41,12 +42,6 @@ interface AdminPageClientProps {
 const SAVED_LABEL_DURATION_MS = 1600;
 // "최근 5분 이내 접속 = 활동중" — 디자인 문서에 정확한 임계값이 없어 이 페이지에서 정한 기준.
 const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000;
-
-function clampInt(value: string, min: number, max: number): number {
-  const n = parseInt(value, 10);
-  if (!Number.isFinite(n) || Number.isNaN(n)) return min;
-  return Math.min(Math.max(n, min), max);
-}
 
 /** "3분 전"/"1시간 전"/"어제"/"n일 전" 형태의 상대시간 문구. 새 라이브러리 없이 순수 함수로 구현. */
 function formatRelativeTime(iso: string | null, nowMs: number): string {

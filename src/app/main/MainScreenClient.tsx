@@ -14,9 +14,16 @@ import { ChecklistSection } from "@/components/checklist/ChecklistSection";
 import { ChecklistRow } from "@/components/checklist/ChecklistRow";
 import { DurationInput } from "@/components/checklist/DurationInput";
 import { BossEditDialog } from "@/components/checklist/BossEditDialog";
+import {
+  CATEGORY_BG_CLASS,
+  CATEGORY_LABEL_SHORT,
+  CATEGORY_SOFT_CLASS,
+  CATEGORY_TEXT_CLASS,
+} from "@/components/checklist/category-styles";
 import { CATEGORY_LABEL, CATEGORY_ORDER, type ChecklistCategory } from "@/lib/presets";
 import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
+import { fetchCharacterStats } from "@/lib/stats-client";
 import { saveDuration, toggleCompletion } from "./actions";
 import { saveBossSelection } from "./boss-selection-actions";
 import { deleteAccountAction, resetAllCompletions, signOutAction } from "./settings-actions";
@@ -72,23 +79,6 @@ interface HoverStat {
   arcaneForce?: number;
   authenticForce?: number;
 }
-
-const CATEGORY_LABEL_SHORT: Record<ChecklistCategory, string> = { daily: "일일", weekly: "주간", boss: "보스" };
-const CATEGORY_TEXT_CLASS: Record<ChecklistCategory, string> = {
-  daily: "text-maple-category-daily",
-  weekly: "text-maple-category-weekly",
-  boss: "text-maple-category-boss",
-};
-const CATEGORY_BG_CLASS: Record<ChecklistCategory, string> = {
-  daily: "bg-maple-category-daily",
-  weekly: "bg-maple-category-weekly",
-  boss: "bg-maple-category-boss",
-};
-const CATEGORY_SOFT_CLASS: Record<ChecklistCategory, string> = {
-  daily: "bg-maple-category-daily/[.13] text-maple-category-daily",
-  weekly: "bg-maple-category-weekly/[.12] text-maple-category-weekly",
-  boss: "bg-maple-category-boss/[.13] text-maple-category-boss",
-};
 
 function formatMinutes(total: number): string | null {
   if (!total || total <= 0) return null;
@@ -399,24 +389,12 @@ export function MainScreenClient({
 
     if (!hoverStats[ocid]) {
       setHoverStats((s) => ({ ...s, [ocid]: { status: "loading" } }));
-      fetch(`/api/characters/${ocid}/stats`)
-        .then((res) => res.json())
-        .then((data: { combatPower?: number | null; arcaneForce?: number; authenticForce?: number; error?: string }) => {
-          if (data.error) {
-            setHoverStats((s) => ({ ...s, [ocid]: { status: "error" } }));
-          } else {
-            setHoverStats((s) => ({
-              ...s,
-              [ocid]: {
-                status: "loaded",
-                combatPower: data.combatPower ?? null,
-                arcaneForce: data.arcaneForce ?? 0,
-                authenticForce: data.authenticForce ?? 0,
-              },
-            }));
-          }
-        })
-        .catch(() => setHoverStats((s) => ({ ...s, [ocid]: { status: "error" } })));
+      fetchCharacterStats(ocid).then((stats) => {
+        setHoverStats((s) => ({
+          ...s,
+          [ocid]: stats ? { status: "loaded", ...stats } : { status: "error" },
+        }));
+      });
     }
   }
 

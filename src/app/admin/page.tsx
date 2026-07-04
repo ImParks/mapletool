@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { kstMidnight, kstParts } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
-import { Logo } from "@/components/ui/Logo";
+import { CenteredNotice } from "@/components/CenteredNotice";
 import { AdminPageClient, type AdminBossPresetDTO, type AdminStatDTO, type RecentAccessDTO } from "./AdminPageClient";
 
 // 관리자별/시점별 통계·최근 접속·보스 목록을 담는 페이지라 요청마다 새로 렌더해야 한다
@@ -29,36 +30,7 @@ interface BossPresetRow {
   rec_hexa: number | null;
 }
 
-/**
- * 주어진 시각을 KST 기준 연/월/일/요일로 변환한다. src/lib/period.ts의 (export되지 않은) kstParts와
- * 동일한 기법(Intl.DateTimeFormat + Asia/Seoul)을 이 페이지 전용으로 작게 재구현한 것이다 —
- * period.ts는 ResetType/currentPeriodKey/RESET_LABEL 세 가지만 export하는 계약이라(다른 여러
- * 문서에 명시) 이 페이지만을 위해 export를 늘리지 않는다.
- */
-function kstParts(now: Date) {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
-  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    weekday: weekdayMap[parts.weekday as string],
-  };
-}
-
-/** 지정한 KST 날짜 00:00에 해당하는 실제 시각(UTC 기준 Date). KST=UTC+9 고정(서머타임 없음). */
-function kstMidnight(year: number, month: number, day: number): Date {
-  return new Date(Date.UTC(year, month - 1, day) - 9 * 60 * 60 * 1000);
-}
-
-/** 오늘(KST) 00:00 시각. */
+/** 오늘(KST) 00:00 시각. (KST 변환은 period.ts의 공용 kstParts/kstMidnight 재사용) */
 function todayStartKST(now: Date): Date {
   const { year, month, day } = kstParts(now);
   return kstMidnight(year, month, day);
@@ -72,25 +44,17 @@ function thisWeekMondayStartKST(now: Date): Date {
   return new Date(todayMidnight.getTime() - mondayOffset * 24 * 60 * 60 * 1000);
 }
 
-function NotConfiguredNotice() {
-  return (
-    <div className="relative min-h-screen w-full overflow-x-hidden">
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0" style={{ background: "var(--bg-glow)" }} />
-      <div className="relative z-10 flex min-h-screen flex-col items-center justify-center gap-6 px-5 py-10">
-        <Logo size="lg" />
-        <Card className="w-full max-w-[420px]">
+export default async function AdminPage() {
+  if (!isSupabaseConfigured()) {
+    return (
+      <CenteredNotice>
+        <Card>
           <p className="text-sm text-maple-text-secondary">
             Supabase 환경변수가 설정되지 않았습니다. 관리자에게 문의해 주세요.
           </p>
         </Card>
-      </div>
-    </div>
-  );
-}
-
-export default async function AdminPage() {
-  if (!isSupabaseConfigured()) {
-    return <NotConfiguredNotice />;
+      </CenteredNotice>
+    );
   }
 
   const supabase = await createClient();
