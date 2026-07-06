@@ -7,8 +7,6 @@ export interface SignupState {
   error: string | null;
 }
 
-export const initialSignupState: SignupState = { error: null };
-
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }

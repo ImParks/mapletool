@@ -5,7 +5,11 @@ import { Mail, Lock, User } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { signupAction, initialSignupState } from "./actions";
+import { signupAction, type SignupState } from "./actions";
+
+// "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
+// 이 클라이언트 컴포넌트에 둔다.
+const initialSignupState: SignupState = { error: null };
 
 export function SignupForm() {
   const [state, formAction, isPending] = useActionState(signupAction, initialSignupState);

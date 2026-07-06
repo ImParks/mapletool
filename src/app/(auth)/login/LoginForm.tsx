@@ -7,9 +7,12 @@ import { Mail, Lock } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { loginAction, initialLoginState } from "./actions";
+import { loginAction, type LoginState } from "./actions";
 
 const REMEMBER_EMAIL_KEY = "mapletool:rememberedEmail";
+// "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
+// 이 클라이언트 컴포넌트에 둔다.
+const initialLoginState: LoginState = { error: null };
 
 export function LoginForm() {
   const [state, formAction, isPending] = useActionState(loginAction, initialLoginState);

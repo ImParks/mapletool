@@ -5,7 +5,11 @@ import { KeyRound } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { deleteNexonKey, initialNexonKeyState, saveNexonKey } from "@/app/main/nexon-key-actions";
+import { deleteNexonKey, saveNexonKey, type NexonKeyState } from "@/app/main/nexon-key-actions";
+
+// "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
+// 이 클라이언트 컴포넌트에 둔다.
+const initialNexonKeyState: NexonKeyState = { error: null, success: false };
 
 interface NexonKeyCardProps {
   /** 등록된 키가 있는지(서버에서 이미 조회한 값). 원문은 절대 이 컴포넌트에 넘기지 않는다. */

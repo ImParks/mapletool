@@ -9,8 +9,6 @@ export interface NexonKeyState {
   success: boolean;
 }
 
-export const initialNexonKeyState: NexonKeyState = { error: null, success: false };
-
 /**
  * 넥슨 API 키 등록/교체. getCharacterList 로 실제 조회가 되는지 검증한 뒤 user_secrets 에
  * upsert 한다. 넥슨 원본 에러 텍스트는 그대로 노출하지 않는다(민감할 수 있음).

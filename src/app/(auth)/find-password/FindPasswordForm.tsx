@@ -6,7 +6,11 @@ import { Mail, Check } from "lucide-react";
 import { Button, buttonClassName } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
-import { findPasswordAction, initialFindPasswordState } from "./actions";
+import { findPasswordAction, type FindPasswordState } from "./actions";
+
+// "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
+// 이 클라이언트 컴포넌트에 둔다.
+const initialFindPasswordState: FindPasswordState = { status: "idle", error: null };
 
 export function FindPasswordForm() {
   const [state, formAction, isPending] = useActionState(findPasswordAction, initialFindPasswordState);
