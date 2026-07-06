@@ -1,12 +1,16 @@
 "use server";
 
 import { headers } from "next/headers";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 export interface FindPasswordState {
   status: "idle" | "sent";
   error: string | null;
 }
+
+// env 미설정 시 500 스택트레이스 대신 폼에 명확한 안내를 돌려준다(login/actions.ts 와 동일 방침).
+const ENV_MISSING_ERROR =
+  "서버에 Supabase 환경변수가 설정되지 않았습니다. .env(.env.local)의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 값을 확인해 주세요.";
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -25,6 +29,9 @@ export async function findPasswordAction(
 
   if (!email || !isValidEmail(email)) {
     return { status: "idle", error: "올바른 이메일 주소를 입력해 주세요." };
+  }
+  if (!isSupabaseConfigured()) {
+    return { status: "idle", error: ENV_MISSING_ERROR };
   }
 
   const supabase = await createClient();

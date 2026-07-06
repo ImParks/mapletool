@@ -1,11 +1,15 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 export interface SignupState {
   error: string | null;
 }
+
+// env 미설정 시 500 스택트레이스 대신 폼에 명확한 안내를 돌려준다(login/actions.ts 와 동일 방침).
+const ENV_MISSING_ERROR =
+  "서버에 Supabase 환경변수가 설정되지 않았습니다. .env(.env.local)의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 값을 확인해 주세요.";
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -38,6 +42,9 @@ export async function signupAction(_prevState: SignupState, formData: FormData):
   }
   if (!agree) {
     return { error: "서비스 이용약관 및 개인정보 처리방침에 동의해 주세요." };
+  }
+  if (!isSupabaseConfigured()) {
+    return { error: ENV_MISSING_ERROR };
   }
 
   const supabase = await createClient();
