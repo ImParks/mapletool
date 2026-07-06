@@ -23,7 +23,6 @@ src/
     (auth)/            # 랜딩(/)·로그인·회원가입·비밀번호찾기 (라우트 그룹, 공통 중앙정렬 레이아웃)
     main/              # 메인 화면(월드/캐릭터/체크리스트) + 서버 액션들(actions.ts 등)
     admin/             # 관리자 페이지(role='admin' 게이트) + boss-preset-actions.ts
-    api/characters/[ocid]/stats/route.ts  # 호버/보스편집용 스탯 지연 조회 Route Handler
     layout.tsx / globals.css / manifest.ts
   components/
     ui/                # Button·Input·Checkbox·Switch·Card·Badge·Dialog·IconButton·Logo
@@ -33,10 +32,11 @@ src/
   lib/
     maple.ts           # 넥슨 OpenAPI 클라이언트 — ⚠️ 서버 전용 (apiKey로 fetch)
     period.ts          # 초기화 주기 키 + KST 공용 헬퍼(kstParts/kstMidnight). 순수 모듈
-    presets.ts         # daily/weekly 코드 프리셋(보스는 DB boss_presets). 순수 모듈
-    checklist-data.ts  # 항목 병합/필터 순수 계산 (서버에서 사용)
-    scheduler-state.ts # 넥슨 스케줄러 응답 정규화 (순수 모듈, 자동 동기화 기능용 토대)
-    action-result.ts / async.ts / num.ts / cn.ts / stats-client.ts  # 공용 유틸
+    presets.ts         # daily/weekly 코드 프리셋(보스·신규발견 항목은 DB boss_presets/quest_presets). 순수 모듈
+    checklist-data.ts  # 항목 병합/필터 순수 계산 — PRESET_ITEMS+quest_presets+boss_presets 3소스 (서버에서 사용)
+    scheduler-state.ts # 넥슨 스케줄러 응답 정규화 + 정밀 매칭(findContentMatch/findBossMatch). 순수 모듈
+    warmup.ts          # 캐릭터 스냅샷/스케줄러 동기화 핵심 로직(서버 전용) — 동기화·숙제 동기화 버튼과 최초 키연결 워밍업이 공유
+    action-result.ts / num.ts / cn.ts  # 공용 유틸
     supabase/
       client.ts        # 브라우저용 createClient ("use client")
       server.ts        # 서버용 createClient (async) + isSupabaseConfigured()

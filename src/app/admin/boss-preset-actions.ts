@@ -39,6 +39,17 @@ export interface BossPresetFields {
   symbolType: "arcane" | "authentic";
   reqForce: number;
   recHexa: number;
+  /** 넥슨 스케줄러 API 원문 콘텐츠명(예: "스우"). 매칭 키 — 값이 없으면 자동 동기화 대상에서 제외. */
+  nexonContentName: string | null;
+  /** 넥슨 스케줄러 API 원문 난이도(예: "하드"). nexonContentName 과 둘 다 있어야 자동 매칭(오매칭 방지). */
+  nexonDifficulty: string | null;
+}
+
+/** 빈 문자열/공백만 있는 입력을 null 로 정규화한다(폼의 빈 칸 = "매칭 안 함"). */
+function normalizeNullableText(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -58,6 +69,8 @@ export async function updateBossPreset(id: string, fields: BossPresetFields): Pr
       symbol_type: fields.symbolType === "authentic" ? "authentic" : "arcane",
       req_force: clampInt(fields.reqForce, 0, 99999),
       rec_hexa: clampInt(fields.recHexa, 0, 30),
+      nexon_content_name: normalizeNullableText(fields.nexonContentName),
+      nexon_difficulty: normalizeNullableText(fields.nexonDifficulty),
     })
     .eq("id", id);
 
@@ -103,6 +116,8 @@ export async function addBossPreset(fields: NewBossPresetFields): Promise<Action
       symbol_type: fields.symbolType === "authentic" ? "authentic" : "arcane",
       req_force: clampInt(fields.reqForce, 0, 99999),
       rec_hexa: clampInt(fields.recHexa, 0, 30),
+      nexon_content_name: normalizeNullableText(fields.nexonContentName),
+      nexon_difficulty: normalizeNullableText(fields.nexonDifficulty),
       list_order: nextOrder,
       created_by: auth.userId,
     })

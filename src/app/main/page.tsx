@@ -1,8 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { getCharacterBasic, getCharacterList, MapleApiError } from "@/lib/maple";
-import { buildAllItems, type BossPreset } from "@/lib/checklist-data";
-import { mapWithConcurrency } from "@/lib/async";
+import { buildAllItems, type BossPreset, type QuestPreset } from "@/lib/checklist-data";
 import { currentPeriodKey } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
 import { CenteredNotice } from "@/components/CenteredNotice";
@@ -32,6 +30,12 @@ interface BossPresetRow {
   req_force: number | null;
   rec_hexa: number | null;
 }
+interface QuestPresetRow {
+  id: string;
+  name: string;
+  category: string;
+  reset_type: string;
+}
 interface CompletionRow {
   character_ocid: string;
   item_id: string;
@@ -47,6 +51,18 @@ interface BossSelectionRow {
 }
 interface ProfileRoleRow {
   role: string;
+}
+/** character_cache 행. 넥슨 라이브 호출 대신 이 캐시만 읽는다("동기화"/"숙제 동기화" 버튼으로만 갱신). */
+interface CharacterCacheRow {
+  ocid: string;
+  character_name: string;
+  world_name: string;
+  character_class: string;
+  character_level: number;
+  image_url: string | null;
+  combat_power: number | null;
+  arcane_force: number | null;
+  authentic_force: number | null;
 }
 
 /** 넥슨 키 원문을 마스킹해 표시용 문자열만 만든다. 원문은 이 함수 밖으로(클라이언트로) 전달하지 않는다. */
@@ -100,59 +116,41 @@ export default async function MainPage() {
     );
   }
 
-  let accountChars;
-  try {
-    const characterList = await getCharacterList(apiKey);
-    accountChars = characterList.account_list.flatMap((a) => a.character_list);
-  } catch (error) {
-    const message = error instanceof MapleApiError ? error.message : "캐릭터 정보를 불러오지 못했습니다.";
-    return (
-      <CenteredNotice>
-        <p role="alert" className="mb-4 rounded-lg bg-maple-danger-soft px-3 py-2 text-center text-xs font-semibold text-maple-danger">
-          {message}
-        </p>
-        <Card>
-          <NexonKeyCard registered={Boolean(secretRow?.nexon_key_valid)} maskedKey={maskNexonKey(apiKey)} />
-        </Card>
-      </CenteredNotice>
-    );
-  }
-
-  // 계정 캐릭터별 character_image 보강. 넥슨 개발단계 키는 초당 5건 제한이라 캐릭터가 많은
-  // 계정(수십 개)에서 무제한 병렬 호출은 429 를 유발한다 — 동시성을 5로 제한하고, basic 응답은
-  // maple.ts 에서 길게 캐시(1시간)해 반복 진입 시 대부분 캐시로 흡수한다.
-  // 개별 캐릭터 조회가 실패해도 전체 화면을 막지 않고 이미지만 비운다.
-  const basics = await mapWithConcurrency(accountChars, 5, async (c) => {
-    try {
-      const basic = await getCharacterBasic(apiKey, c.ocid);
-      return { ocid: c.ocid, imageUrl: basic.character_image ?? null };
-    } catch {
-      return { ocid: c.ocid, imageUrl: null };
-    }
-  });
-  const imageByOcid = new Map(basics.map((b) => [b.ocid, b.imageUrl]));
-
-  const dailyKey = currentPeriodKey("daily");
-  const weeklyMonKey = currentPeriodKey("weekly_mon");
-  const weeklyThuKey = currentPeriodKey("weekly_thu");
-
-  const [bossPresetsResult, completionsResult, durationsResult, bossSelectionResult, profileRoleResult] =
-    await Promise.all([
-      supabase
-        .from("boss_presets")
-        .select("id,name,reset_type,req_level,symbol_type,req_force,rec_hexa")
-        .order("list_order"),
-      supabase
-        .from("completions")
-        .select("character_ocid,item_id,period_key")
-        .eq("user_id", user.id)
-        .in("period_key", [dailyKey, weeklyMonKey, weeklyThuKey]),
-      supabase.from("quest_durations").select("item_id,minutes").eq("user_id", user.id),
-      supabase.from("character_boss_selection").select("character_ocid,item_id").eq("user_id", user.id),
-      // 앱바의 관리자(방패) 아이콘 노출 여부 판정용. 일반 유저에게는 아이콘 자체를 숨긴다
-      // (실제 접근 방어선은 src/app/admin/page.tsx의 role 재확인).
-      supabase.from("profiles").select("role").eq("id", user.id).maybeSingle<ProfileRoleRow>(),
-    ]);
+  // 넥슨은 여기서 전혀 호출하지 않는다 — character_cache(캐시)만 읽는다. 최초 채움은 키 등록
+  // 워밍업(saveNexonKey)이, 갱신은 캐릭터 상세의 "동기화"/"숙제 동기화" 버튼과 상단바 "캐릭터
+  // 동기화"(refreshCharacterList)가 담당한다. 캐시가 비어있어도(워밍업 진행 중/실패) 에러를
+  // 던지지 않고 빈 배열로 자연스럽게 처리한다.
+  const [
+    characterCacheResult,
+    bossPresetsResult,
+    questPresetsResult,
+    completionsResult,
+    durationsResult,
+    bossSelectionResult,
+    profileRoleResult,
+  ] = await Promise.all([
+    supabase
+      .from("character_cache")
+      .select(
+        "ocid,character_name,world_name,character_class,character_level,image_url,combat_power,arcane_force,authentic_force"
+      )
+      .eq("user_id", user.id),
+    supabase
+      .from("boss_presets")
+      .select("id,name,reset_type,req_level,symbol_type,req_force,rec_hexa")
+      .order("list_order"),
+    supabase.from("quest_presets").select("id,name,category,reset_type").order("list_order"),
+    supabase
+      .from("completions")
+      .select("character_ocid,item_id,period_key")
+      .eq("user_id", user.id)
+      .in("period_key", [currentPeriodKey("daily"), currentPeriodKey("weekly_mon"), currentPeriodKey("weekly_thu")]),
+    supabase.from("quest_durations").select("item_id,minutes").eq("user_id", user.id),
+    supabase.from("character_boss_selection").select("character_ocid,item_id").eq("user_id", user.id),
+    // 앱바의 관리자(방패) 아이콘 노출 여부 판정용. 일반 유저에게는 아이콘 자체를 숨긴다
+    // (실제 접근 방어선은 src/app/admin/page.tsx의 role 재확인).
+    supabase.from("profiles").select("role").eq("id", user.id).maybeSingle<ProfileRoleRow>(),
+  ]);
   const isAdmin = profileRoleResult.data?.role === "admin";
 
   const bossPresetRows = (bossPresetsResult.data ?? []) as BossPresetRow[];
@@ -166,7 +164,14 @@ export default async function MainPage() {
     req_force: b.req_force,
     rec_hexa: b.rec_hexa,
   }));
-  const allItems = buildAllItems(bossPresets);
+  const questPresetRows = (questPresetsResult.data ?? []) as QuestPresetRow[];
+  const questPresets: QuestPreset[] = questPresetRows.map((q) => ({
+    id: q.id,
+    name: q.name,
+    category: q.category as QuestPreset["category"],
+    reset_type: q.reset_type as QuestPreset["reset_type"],
+  }));
+  const allItems = buildAllItems(bossPresets, questPresets);
   const items: ChecklistItemDTO[] = allItems.map((i) => ({
     id: i.id,
     name: i.name,
@@ -204,7 +209,8 @@ export default async function MainPage() {
     durations[row.item_id] = row.minutes;
   }
 
-  const characters: CharacterDTO[] = accountChars.map((c) => {
+  const characterCacheRows = (characterCacheResult.data ?? []) as CharacterCacheRow[];
+  const characters: CharacterDTO[] = characterCacheRows.map((c) => {
     const bossSelection = bossSelectionByOcid.get(c.ocid);
     return {
       ocid: c.ocid,
@@ -212,7 +218,10 @@ export default async function MainPage() {
       characterClass: c.character_class,
       level: c.character_level,
       world: c.world_name,
-      imageUrl: imageByOcid.get(c.ocid) ?? null,
+      imageUrl: c.image_url,
+      combatPower: c.combat_power,
+      arcaneForce: c.arcane_force,
+      authenticForce: c.authentic_force,
       // 행이 하나도 없으면(undefined) 전체 보스 선택으로 간주(null) — supabase/README.md 참고.
       bossItemIds: bossSelection ? Array.from(bossSelection) : null,
       doneItemIds: Array.from(doneByOcid.get(c.ocid) ?? []),

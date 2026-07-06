@@ -31,6 +31,10 @@ export interface AdminBossPresetDTO {
   symbolType: "arcane" | "authentic" | null;
   reqForce: number | null;
   recHexa: number | null;
+  /** 넥슨 스케줄러 API 원문 콘텐츠명(예: "스우"). 자동 동기화 매칭 키 — 없으면 수동 체크만 가능. */
+  nexonContentName: string | null;
+  /** 넥슨 스케줄러 API 원문 난이도(예: "하드"). nexonContentName 과 둘 다 있어야 자동 매칭. */
+  nexonDifficulty: string | null;
 }
 
 interface AdminPageClientProps {
@@ -114,6 +118,8 @@ function defaultDraft(preset: AdminBossPresetDTO): BossPresetFields {
     reqForce: preset.reqForce ?? 0,
     recHexa: preset.recHexa ?? 0,
     symbolType: preset.symbolType ?? "arcane",
+    nexonContentName: preset.nexonContentName ?? "",
+    nexonDifficulty: preset.nexonDifficulty ?? "",
   };
 }
 
@@ -138,13 +144,22 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
   useEffect(() => {
     setDraft(defaultDraft(preset));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- preset 필드 각각을 의존성으로 사용
-  }, [preset.reqLevel, preset.reqForce, preset.recHexa, preset.symbolType]);
+  }, [
+    preset.reqLevel,
+    preset.reqForce,
+    preset.recHexa,
+    preset.symbolType,
+    preset.nexonContentName,
+    preset.nexonDifficulty,
+  ]);
 
   const dirty =
     draft.reqLevel !== original.reqLevel ||
     draft.reqForce !== original.reqForce ||
     draft.recHexa !== original.recHexa ||
-    draft.symbolType !== original.symbolType;
+    draft.symbolType !== original.symbolType ||
+    draft.nexonContentName !== original.nexonContentName ||
+    draft.nexonDifficulty !== original.nexonDifficulty;
 
   function handleSave() {
     setError(null);
@@ -231,12 +246,42 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
             className="w-9 border-none bg-transparent text-right text-xs font-extrabold text-maple-text-primary outline-none tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           />
         </label>
+        <label className="flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5">
+          <span className="text-[10.5px] font-bold text-maple-text-muted">넥슨 콘텐츠명</span>
+          <input
+            type="text"
+            value={draft.nexonContentName ?? ""}
+            onChange={(event) => setDraft((d) => ({ ...d, nexonContentName: event.target.value }))}
+            placeholder="예: 스우"
+            aria-label={`${preset.name} 넥슨 스케줄러 콘텐츠명`}
+            className="w-20 border-none bg-transparent text-xs font-extrabold text-maple-text-primary outline-none"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5">
+          <span className="text-[10.5px] font-bold text-maple-text-muted">넥슨 난이도</span>
+          <input
+            type="text"
+            value={draft.nexonDifficulty ?? ""}
+            onChange={(event) => setDraft((d) => ({ ...d, nexonDifficulty: event.target.value }))}
+            placeholder="예: 하드"
+            aria-label={`${preset.name} 넥슨 스케줄러 난이도`}
+            className="w-16 border-none bg-transparent text-xs font-extrabold text-maple-text-primary outline-none"
+          />
+        </label>
       </div>
     </div>
   );
 }
 
-const EMPTY_FORM = { name: "", reqLevel: "", reqForce: "", recHexa: "", symbolType: "arcane" as const };
+const EMPTY_FORM = {
+  name: "",
+  reqLevel: "",
+  reqForce: "",
+  recHexa: "",
+  symbolType: "arcane" as const,
+  nexonContentName: "",
+  nexonDifficulty: "",
+};
 
 export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossPresets }: AdminPageClientProps) {
   const [bossPresets, setBossPresets] = useState<AdminBossPresetDTO[]>(initialBossPresets);
@@ -247,6 +292,8 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
     reqForce: string;
     recHexa: string;
     symbolType: "arcane" | "authentic";
+    nexonContentName: string;
+    nexonDifficulty: string;
   }>(EMPTY_FORM);
   const [addError, setAddError] = useState<string | null>(null);
   const [isAdding, startAddTransition] = useTransition();
@@ -255,7 +302,15 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
     setBossPresets((prev) =>
       prev.map((b) =>
         b.id === id
-          ? { ...b, reqLevel: fields.reqLevel, reqForce: fields.reqForce, recHexa: fields.recHexa, symbolType: fields.symbolType }
+          ? {
+              ...b,
+              reqLevel: fields.reqLevel,
+              reqForce: fields.reqForce,
+              recHexa: fields.recHexa,
+              symbolType: fields.symbolType,
+              nexonContentName: fields.nexonContentName,
+              nexonDifficulty: fields.nexonDifficulty,
+            }
           : b
       )
     );
@@ -277,6 +332,8 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
         reqForce: clampInt(form.reqForce, 0, 99999),
         recHexa: clampInt(form.recHexa, 0, 30),
         symbolType: form.symbolType,
+        nexonContentName: form.nexonContentName,
+        nexonDifficulty: form.nexonDifficulty,
       };
       const result = await addBossPreset({ name, ...fields });
       if ("error" in result) {
@@ -423,6 +480,20 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
             value={form.recHexa}
             onChange={(event) => setForm((f) => ({ ...f, recHexa: event.target.value }))}
           />
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="넥슨 콘텐츠명"
+              placeholder="예: 스우 (비워두면 자동동기화 제외)"
+              value={form.nexonContentName}
+              onChange={(event) => setForm((f) => ({ ...f, nexonContentName: event.target.value }))}
+            />
+            <Input
+              label="넥슨 난이도"
+              placeholder="예: 하드"
+              value={form.nexonDifficulty}
+              onChange={(event) => setForm((f) => ({ ...f, nexonDifficulty: event.target.value }))}
+            />
+          </div>
           {addError && (
             <p role="alert" className="text-xs font-semibold text-maple-danger">
               {addError}

@@ -69,9 +69,14 @@ export function NexonKeyCard({ registered, maskedKey, className }: NexonKeyCardP
             autoComplete="off"
             placeholder="새 API 키 붙여넣기"
             leadingIcon={<KeyRound className="h-4 w-4" aria-hidden="true" />}
-            helpText="키는 계정에 안전하게 저장되며 캐릭터 조회에만 사용됩니다."
+            helpText="키는 계정에 안전하게 저장되며 캐릭터 조회에만 사용됩니다. 최초 연결 시 계정의 모든 캐릭터 정보를 불러와요 — 캐릭터 수에 따라 다소 시간이 걸릴 수 있어요."
             required
           />
+          {isSaving && (
+            <p role="status" className="text-xs font-semibold text-maple-text-secondary">
+              캐릭터 정보를 불러오는 중이에요. 캐릭터 수가 많으면 잠시 시간이 걸릴 수 있어요…
+            </p>
+          )}
           <div className="flex gap-2.5">
             <Button type="submit" variant="secondary" size="sm" pending={isSaving}>
               {registered ? "키 업데이트" : "키 등록"}

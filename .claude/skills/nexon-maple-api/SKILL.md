@@ -88,7 +88,23 @@ https://open.api.nexon.com
 | OPENAPI00011 | 503 | API 점검 중 |
 
 ### API 카테고리 (명세 페이지 기준)
-캐릭터 정보 / 유니온 정보 / 길드 정보 / 연무장 / 확률 정보 / 랭킹 / 공지.
+캐릭터 정보 / 유니온 정보 / 길드 정보 / 연무장 / 확률 정보 / 랭킹 / 공지 / **스케줄러**.
+
+### 스케줄러 — 일일/주간/보스 완료 여부 (넥슨이 직접 제공!)
+⚠️ 과거에 "넥슨 API엔 일일/주간 퀘스트 완료 여부가 없다"고 판단했던 것은 **틀렸다** — 아래 엔드포인트로 조회 가능. `character/basic`·`stat`과 달리 **자기 계정 캐릭터만** 조회 가능한 제약이 있다.
+
+| 메서드/경로 | 파라미터 | 비고 |
+|---|---|---|
+| `GET /maplestory/v1/scheduler/character-state` | `ocid`, `date?`(YYYY-MM-DD, 미입력 시 오늘) | ⚠️ **자신의 계정에 속한 캐릭터만 조회 가능** (basic/stat과 다른 인증 범위). 해당 기준일에 접속 이력이 없으면 응답이 없을 수 있음 |
+
+**응답 (`CharacterStateResponse`):**
+- `date`, `character_name`, `world_name`, `character_level`, `character_class`
+- `daily_contents[]` — 일일 콘텐츠/퀘스트: `{ content_name, type("contents"|"quest"), registration_flag(인게임 스케줄러 등록 여부), now_count, max_count, quest_state("0":기타/"1":진행중/"2":완료) }`
+- `weekly_contents[]` — 주간 콘텐츠/퀘스트: `daily_contents`와 동일 구조
+- `boss_contents[]` — 주간보스: `{ content_name, difficulty, cycle(초기화 주기), list_order_no, registration_flag, complete_flag("true"/"false") }`
+- `weekly_boss_clear_count`, `weekly_boss_clear_limit_count` — 주간 보스 처치 완료/제한 횟수
+
+**의미:** 이 엔드포인트를 쓰면 사용자가 앱에서 수동 체크하지 않아도, **게임 내 실제 완료 여부를 넥슨 서버에서 그대로 가져와** 일일/주간 퀘스트·주간보스 체크리스트를 자동 동기화할 수 있다. 단, 인게임 "스케줄러" 기능에 등록된 항목(`registration_flag`)만 잡히고, 조회 시점의 데이터가 실시간이 아니라 `date` 기준 스냅샷이라는 점은 유의.
 
 ---
 
@@ -97,6 +113,7 @@ https://open.api.nexon.com
 ### 추가 엔드포인트
 <!-- 예: 유니온(union/raider), 장비(item-equipment), 심볼(symbol-equipment),
      캐시장비, 어빌리티, 무릉도장(dojang), 캐릭터 인기도(popularity) 등 -->
+- [x] 스케줄러(scheduler/character-state) — 위 섹션에 정리 완료
 - [ ] (붙여넣기)
 
 ### date 파라미터 상세

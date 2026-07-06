@@ -28,6 +28,8 @@ interface BossPresetRow {
   symbol_type: string | null;
   req_force: number | null;
   rec_hexa: number | null;
+  nexon_content_name: string | null;
+  nexon_difficulty: string | null;
 }
 
 /** 오늘(KST) 00:00 시각. (KST 변환은 period.ts의 공용 kstParts/kstMidnight 재사용) */
@@ -86,7 +88,7 @@ export default async function AdminPage() {
     supabase.rpc("admin_recent_access", { p_limit: 20 }),
     supabase
       .from("boss_presets")
-      .select("id, name, req_level, symbol_type, req_force, rec_hexa")
+      .select("id, name, req_level, symbol_type, req_force, rec_hexa, nexon_content_name, nexon_difficulty")
       .order("list_order"),
   ]);
 
@@ -125,6 +127,8 @@ export default async function AdminPage() {
     symbolType: b.symbol_type === "authentic" ? "authentic" : b.symbol_type === "arcane" ? "arcane" : null,
     reqForce: b.req_force,
     recHexa: b.rec_hexa,
+    nexonContentName: b.nexon_content_name,
+    nexonDifficulty: b.nexon_difficulty,
   }));
 
   return (

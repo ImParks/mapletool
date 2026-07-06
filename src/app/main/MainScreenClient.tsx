@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon, Shield } from "lucide-react";
@@ -23,9 +24,9 @@ import {
 import { CATEGORY_LABEL, CATEGORY_ORDER, type ChecklistCategory } from "@/lib/presets";
 import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
-import { fetchCharacterStats } from "@/lib/stats-client";
-import { saveDuration, toggleCompletion } from "./actions";
+import { refreshCharacterSnapshot, saveDuration, syncSchedulerState, toggleCompletion } from "./actions";
 import { saveBossSelection } from "./boss-selection-actions";
+import { refreshCharacterList } from "./nexon-key-actions";
 import { deleteAccountAction, resetAllCompletions, signOutAction } from "./settings-actions";
 
 export interface ChecklistItemDTO {
@@ -53,6 +54,12 @@ export interface CharacterDTO {
   level: number;
   world: string;
   imageUrl: string | null;
+  /** character_cache 캐시값(넥슨 라이브 호출 대체). null = 아직 "동기화"로 스탯을 조회한 적 없음. */
+  combatPower: number | null;
+  /** character_cache 캐시값. null = 아직 "동기화"로 스탯을 조회한 적 없음. */
+  arcaneForce: number | null;
+  /** character_cache 캐시값. null = 아직 "동기화"로 스탯을 조회한 적 없음. */
+  authenticForce: number | null;
   /** null = 이 캐릭터에 대한 선택 행이 하나도 없음(전체 보스 선택으로 간주). */
   bossItemIds: string[] | null;
   /** 현재 주기 기준 완료된 item id 목록(서버에서 currentPeriodKey 로 이미 필터링됨). */
@@ -73,11 +80,15 @@ interface MainScreenClientProps {
 const HIDE_DONE_KEY = "mapletool:hideDone";
 const AUTO_SORT_KEY = "mapletool:autoSort";
 
-interface HoverStat {
-  status: "loading" | "loaded" | "error";
-  combatPower?: number | null;
-  arcaneForce?: number;
-  authenticForce?: number;
+/** "동기화"(스탯) 성공 시 로컬에 낙관적으로 덮어쓰는 캐릭터 필드. characters prop 은 서버가 내려준
+ * 값 그대로 유지하고(재조회 전까지 불변), 이 override 를 얹은 파생 배열(charactersView)만 화면에 쓴다. */
+interface CharacterOverride {
+  imageUrl: string | null;
+  level: number;
+  characterClass: string;
+  combatPower: number | null;
+  arcaneForce: number;
+  authenticForce: number;
 }
 
 function formatMinutes(total: number): string | null {
@@ -99,6 +110,17 @@ export function MainScreenClient({
 }: MainScreenClientProps) {
   const router = useRouter();
   const [, startRefresh] = useTransition();
+
+  // "동기화" 버튼으로 갱신한 필드의 낙관적 override. characters(서버 prop) 자체는 건드리지 않고
+  // charactersView 파생 배열에서만 병합해 화면에 반영한다.
+  const [characterOverrides, setCharacterOverrides] = useState<Record<string, CharacterOverride>>({});
+  const charactersView = useMemo(() => {
+    if (Object.keys(characterOverrides).length === 0) return characters;
+    return characters.map((c) => {
+      const override = characterOverrides[c.ocid];
+      return override ? { ...c, ...override } : c;
+    });
+  }, [characters, characterOverrides]);
 
   const worlds = useMemo(() => {
     const seen: string[] = [];
@@ -164,7 +186,16 @@ export function MainScreenClient({
 
   const [hoverOcid, setHoverOcid] = useState<string | null>(null);
   const [popup, setPopup] = useState<{ top: number; left: number } | null>(null);
-  const [hoverStats, setHoverStats] = useState<Record<string, HoverStat>>({});
+
+  // 캐릭터 1개 스코프 동기화 버튼(#상세 패널 헤더)의 캐릭터별 독립 pending 상태 + 결과 안내.
+  const [snapshotPendingOcids, setSnapshotPendingOcids] = useState<Record<string, boolean>>({});
+  const [schedulePendingOcids, setSchedulePendingOcids] = useState<Record<string, boolean>>({});
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+  // 캐릭터 슬라이드 "grab to scroll"(마우스 드래그로 가로 스크롤). 터치/펜은 네이티브 스크롤을 그대로 쓴다.
+  const sliderRef = useRef<HTMLDivElement | null>(null);
+  const sliderDragRef = useRef({ dragging: false, startX: 0, startScrollLeft: 0, moved: false });
+  const [isSliderDragging, setIsSliderDragging] = useState(false);
 
   function bossSelectionFor(char: CharacterDTO): string[] | null {
     return Object.prototype.hasOwnProperty.call(bossSelectionMap, char.ocid)
@@ -184,8 +215,8 @@ export function MainScreenClient({
   }
 
   const worldCharsBase = useMemo(
-    () => characters.filter((c) => c.world === selectedWorld),
-    [characters, selectedWorld]
+    () => charactersView.filter((c) => c.world === selectedWorld),
+    [charactersView, selectedWorld]
   );
   const worldChars = useMemo(() => {
     if (!autoSort) return worldCharsBase;
@@ -199,8 +230,8 @@ export function MainScreenClient({
 
   const [selectedOcid, setSelectedOcid] = useState<string | null>(worldChars[0]?.ocid ?? null);
   const selectedChar = useMemo(
-    () => characters.find((c) => c.ocid === selectedOcid) ?? null,
-    [characters, selectedOcid]
+    () => charactersView.find((c) => c.ocid === selectedOcid) ?? null,
+    [charactersView, selectedOcid]
   );
 
   function progressFor(char: CharacterDTO) {
@@ -360,9 +391,106 @@ export function MainScreenClient({
   }
 
   function handleSync() {
+    if (isSyncing) return; // 연타 방지
     setIsSyncing(true);
-    window.setTimeout(() => setIsSyncing(false), 820);
-    startRefresh(() => router.refresh());
+    refreshCharacterList()
+      .then((result) => {
+        if ("error" in result) setToastError(result.error);
+      })
+      .catch(() => setToastError("캐릭터 목록을 갱신하지 못했습니다."))
+      .finally(() => {
+        setIsSyncing(false);
+        // 캐릭터 목록/character_cache 가 갱신됐으니 서버 컴포넌트가 최신 값을 다시 내려주게 한다.
+        startRefresh(() => router.refresh());
+      });
+  }
+
+  /** "동기화" 버튼(캐릭터 1개 스코프, 스탯/이미지). 성공 시 charactersView 에만 낙관적으로 반영한다. */
+  function handleSyncSnapshot(ocid: string) {
+    if (snapshotPendingOcids[ocid]) return; // 연타 방지
+    setSnapshotPendingOcids((p) => ({ ...p, [ocid]: true }));
+    setToastError(null);
+
+    refreshCharacterSnapshot(ocid)
+      .then((result) => {
+        if ("error" in result) {
+          setToastError(result.error);
+          return;
+        }
+        setCharacterOverrides((m) => ({
+          ...m,
+          [ocid]: {
+            imageUrl: result.imageUrl,
+            level: result.level,
+            characterClass: result.characterClass,
+            combatPower: result.combatPower,
+            arcaneForce: result.arcaneForce,
+            authenticForce: result.authenticForce,
+          },
+        }));
+        setSyncNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
+      })
+      .catch(() => setToastError("캐릭터 정보를 불러오지 못했습니다."))
+      .finally(() => {
+        setSnapshotPendingOcids((p) => {
+          const next = { ...p };
+          delete next[ocid];
+          return next;
+        });
+      });
+  }
+
+  /**
+   * "숙제 동기화" 버튼(캐릭터 1개 스코프, 보스/일퀘 완료 여부 + 신규 콘텐츠 자동 등록).
+   * syncedItemIds/discoveredItemIds 는 doneMap 에 낙관적으로 머지하고(둘 다 서버에서 이미
+   * completions 에 반영된 항목이다), discoveredItemIds(신규 프리셋)가 있으면 클라이언트가
+   * 아직 모르는 항목이 생긴 것이므로 router.refresh() 로 최신 프리셋 목록까지 받아온다.
+   */
+  function handleSyncSchedule(ocid: string) {
+    if (schedulePendingOcids[ocid]) return; // 연타 방지
+    setSchedulePendingOcids((p) => ({ ...p, [ocid]: true }));
+    setToastError(null);
+
+    syncSchedulerState(ocid)
+      .then((result) => {
+        if ("error" in result) {
+          setToastError(result.error);
+          return;
+        }
+
+        const newlyDoneIds = [...result.syncedItemIds, ...result.discoveredItemIds];
+        if (newlyDoneIds.length > 0) {
+          setDoneMap((m) => {
+            const next = { ...m };
+            for (const id of newlyDoneIds) next[`${ocid}::${id}`] = true;
+            return next;
+          });
+        }
+
+        const parts = [`${result.syncedItemIds.length}개 항목을 게임 데이터로 확인했어요`];
+        if (result.discoveredItemIds.length > 0) {
+          parts.push(`${result.discoveredItemIds.length}개 새 항목을 발견해 추가했어요`);
+        }
+        if (result.unmatchedItemIds.length > 0) {
+          parts.push("매칭 안 된 항목은 수동으로 체크해주세요");
+        }
+        if (result.conflictItemIds.length > 0) {
+          parts.push("게임에서는 아직 미완료로 표시돼요");
+        }
+        setSyncNotice(parts.join(" · "));
+
+        if (result.discoveredItemIds.length > 0) {
+          startRefresh(() => router.refresh());
+        }
+      })
+      .catch(() => setToastError("숙제 동기화 중 오류가 발생했습니다."))
+      .finally(() => {
+        setSchedulePendingOcids((p) => {
+          const next = { ...p };
+          delete next[ocid];
+          return next;
+        });
+      });
   }
 
   function handleGoHome() {
@@ -386,16 +514,6 @@ export function MainScreenClient({
     top = Math.max(12, Math.min(top, window.innerHeight - estimatedHeight - 12));
     setHoverOcid(ocid);
     setPopup({ top, left });
-
-    if (!hoverStats[ocid]) {
-      setHoverStats((s) => ({ ...s, [ocid]: { status: "loading" } }));
-      fetchCharacterStats(ocid).then((stats) => {
-        setHoverStats((s) => ({
-          ...s,
-          [ocid]: stats ? { status: "loaded", ...stats } : { status: "error" },
-        }));
-      });
-    }
   }
 
   function handleHoverLeave(ocid: string) {
@@ -403,11 +521,65 @@ export function MainScreenClient({
     setPopup((p) => (hoverOcid === ocid ? null : p));
   }
 
-  const hoverChar = hoverOcid ? characters.find((c) => c.ocid === hoverOcid) ?? null : null;
-  const hoverStat = hoverOcid ? hoverStats[hoverOcid] : undefined;
+  function handleSliderPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== "mouse" || event.button !== 0) return;
+    const el = sliderRef.current;
+    if (!el) return;
+    sliderDragRef.current = { dragging: true, startX: event.clientX, startScrollLeft: el.scrollLeft, moved: false };
+    el.setPointerCapture(event.pointerId);
+    setIsSliderDragging(true);
+    // 드래그 시작 즉시 호버 팝업을 닫는다(드래그 중 카드 위를 스쳐도 팝업이 깜빡이지 않도록).
+    setHoverOcid(null);
+    setPopup(null);
+  }
+
+  function handleSliderPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== "mouse") return;
+    const drag = sliderDragRef.current;
+    if (!drag.dragging || event.buttons !== 1) return;
+    const el = sliderRef.current;
+    if (!el) return;
+    const delta = event.clientX - drag.startX;
+    if (Math.abs(delta) > 6) drag.moved = true;
+    el.scrollLeft = drag.startScrollLeft - delta;
+  }
+
+  function handleSliderPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== "mouse") return;
+    const drag = sliderDragRef.current;
+    if (!drag.dragging) return;
+    const wasMoved = drag.moved;
+    drag.dragging = false;
+    setIsSliderDragging(false);
+    const el = sliderRef.current;
+    if (el?.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
+
+    // 실제로 스크롤이 일어난 드래그였다면(1:1 스크롤 보정 때문에) 커서는 대개 드래그 시작 때와
+    // 같은 카드 위에 남아 있어 mouseenter 가 재발생하지 않는다. 포인터 아래 카드를 직접 찾아
+    // 호버 팝업을 수동으로 갱신한다.
+    if (wasMoved) {
+      const target = document.elementFromPoint(event.clientX, event.clientY);
+      const cardEl = target instanceof Element ? target.closest<HTMLElement>("[data-ocid]") : null;
+      const ocid = cardEl?.dataset.ocid;
+      if (ocid && cardEl) {
+        handleHoverEnter(ocid, cardEl.getBoundingClientRect());
+      }
+    }
+  }
+
+  // 드래그로 끝난 포인터업이 카드 버튼의 click 으로 이어지지 않도록 캡처 단계에서 무효화한다.
+  function handleSliderClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
+    if (sliderDragRef.current.moved) {
+      event.preventDefault();
+      event.stopPropagation();
+      sliderDragRef.current.moved = false;
+    }
+  }
+
+  const hoverChar = hoverOcid ? charactersView.find((c) => c.ocid === hoverOcid) ?? null : null;
   const hoverProgress = hoverChar ? progressFor(hoverChar) : null;
 
-  const bossEditChar = bossEditOcid ? characters.find((c) => c.ocid === bossEditOcid) ?? null : null;
+  const bossEditChar = bossEditOcid ? charactersView.find((c) => c.ocid === bossEditOcid) ?? null : null;
 
   return (
     <div className="relative z-10">
@@ -495,7 +667,21 @@ export function MainScreenClient({
                   {selectedWorld} 캐릭터{" "}
                   <span className="text-maple-text-secondary tabular-nums">{worldChars.length}</span>
                 </div>
-                <div className="flex gap-3 overflow-x-auto px-0.5 pb-3 pt-0.5" style={{ scrollSnapType: "x proximity" }}>
+                <div
+                  ref={sliderRef}
+                  className={cn(
+                    "flex select-none gap-3 overflow-x-auto px-0.5 pb-3 pt-0.5",
+                    isSliderDragging ? "cursor-grabbing" : "cursor-grab"
+                  )}
+                  style={{ scrollSnapType: isSliderDragging ? "none" : "x proximity" }}
+                  onPointerDown={handleSliderPointerDown}
+                  onPointerMove={handleSliderPointerMove}
+                  onPointerUp={handleSliderPointerEnd}
+                  onPointerCancel={handleSliderPointerEnd}
+                  onPointerLeave={handleSliderPointerEnd}
+                  onClickCapture={handleSliderClickCapture}
+                  onDragStart={(event) => event.preventDefault()}
+                >
                   {worldChars.map((char) => {
                     const progress = progressFor(char);
                     const complete = progress.total > 0 && progress.done >= progress.total;
@@ -503,7 +689,11 @@ export function MainScreenClient({
                     return (
                       <div
                         key={char.ocid}
-                        onMouseEnter={(event) => handleHoverEnter(char.ocid, event.currentTarget.getBoundingClientRect())}
+                        data-ocid={char.ocid}
+                        onMouseEnter={(event) => {
+                          if (sliderDragRef.current.dragging) return;
+                          handleHoverEnter(char.ocid, event.currentTarget.getBoundingClientRect());
+                        }}
                         onMouseLeave={() => handleHoverLeave(char.ocid)}
                         className={cn(
                           "flex w-[200px] flex-none flex-col overflow-hidden rounded-2xl border bg-maple-surface-card shadow-sm transition-[transform,box-shadow] duration-180 ease-out hover:-translate-y-[3px] hover:shadow-md",
@@ -522,6 +712,7 @@ export function MainScreenClient({
                               fill
                               sizes="200px"
                               className="object-contain"
+                              draggable={false}
                             />
                           ) : (
                             <div className="flex h-full items-center justify-center text-xs font-semibold text-maple-text-muted">
@@ -591,6 +782,52 @@ export function MainScreenClient({
 
               {selectedChar && (
                 <div className="flex flex-col gap-4 border-t border-maple-line-subtle pt-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-base font-extrabold text-maple-text-primary">
+                        {selectedChar.name}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11.5px] tabular-nums text-maple-text-muted">
+                        Lv.{selectedChar.level} · {selectedChar.characterClass}
+                      </div>
+                    </div>
+                    <div className="flex flex-none gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        pending={!!snapshotPendingOcids[selectedChar.ocid]}
+                        onClick={() => handleSyncSnapshot(selectedChar.ocid)}
+                      >
+                        동기화
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        pending={!!schedulePendingOcids[selectedChar.ocid]}
+                        onClick={() => handleSyncSchedule(selectedChar.ocid)}
+                      >
+                        숙제 동기화
+                      </Button>
+                    </div>
+                  </div>
+
+                  {syncNotice && (
+                    <div
+                      role="status"
+                      className="flex items-center justify-between gap-3 rounded-xl bg-maple-success-soft px-3.5 py-2.5 text-xs font-semibold text-maple-success-text"
+                    >
+                      {syncNotice}
+                      <button
+                        type="button"
+                        onClick={() => setSyncNotice(null)}
+                        aria-label="닫기"
+                        className="font-extrabold"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+
                   {progressFor(selectedChar).categories.map((cat) => {
                     const visibleItems = hideDone
                       ? cat.items.filter((item) => !doneMap[`${selectedChar.ocid}::${item.id}`])
@@ -674,37 +911,17 @@ export function MainScreenClient({
             <div className="mt-3 grid grid-cols-2 gap-2">
               <StatChip
                 label="전투력"
-                value={
-                  hoverStat?.status === "loaded"
-                    ? hoverStat.combatPower != null
-                      ? hoverStat.combatPower.toLocaleString()
-                      : "—"
-                    : hoverStat?.status === "error"
-                      ? "—"
-                      : "…"
-                }
+                value={hoverChar.combatPower != null ? hoverChar.combatPower.toLocaleString() : "—"}
               />
               {/* TODO: 헥사 스탯 — 연동된 넥슨 엔드포인트가 없어 생략(헥사 매트릭스 API 확보 시 추가) */}
               <StatChip label="헥사 스탯" value="—" />
               <StatChip
                 label="아케인 포스"
-                value={
-                  hoverStat?.status === "loaded"
-                    ? (hoverStat.arcaneForce ?? 0).toLocaleString()
-                    : hoverStat?.status === "error"
-                      ? "—"
-                      : "…"
-                }
+                value={hoverChar.arcaneForce != null ? hoverChar.arcaneForce.toLocaleString() : "—"}
               />
               <StatChip
                 label="어센틱 포스"
-                value={
-                  hoverStat?.status === "loaded"
-                    ? (hoverStat.authenticForce ?? 0).toLocaleString()
-                    : hoverStat?.status === "error"
-                      ? "—"
-                      : "…"
-                }
+                value={hoverChar.authenticForce != null ? hoverChar.authenticForce.toLocaleString() : "—"}
               />
             </div>
 
@@ -871,7 +1088,17 @@ export function MainScreenClient({
 
       <BossEditDialog
         open={bossEditOcid !== null}
-        character={bossEditChar ? { ocid: bossEditChar.ocid, name: bossEditChar.name, level: bossEditChar.level } : null}
+        character={
+          bossEditChar
+            ? {
+                ocid: bossEditChar.ocid,
+                name: bossEditChar.name,
+                level: bossEditChar.level,
+                arcaneForce: bossEditChar.arcaneForce,
+                authenticForce: bossEditChar.authenticForce,
+              }
+            : null
+        }
         bossPresets={bossPresets}
         initialSelected={bossEditChar ? bossSelectionFor(bossEditChar) : null}
         onClose={() => setBossEditOcid(null)}

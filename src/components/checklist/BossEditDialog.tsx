@@ -7,18 +7,13 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
 import type { BossPresetDTO } from "@/app/main/MainScreenClient";
 import { cn } from "@/lib/cn";
-import { fetchCharacterStats } from "@/lib/stats-client";
-
-interface BossStatsState {
-  status: "idle" | "loading" | "loaded" | "error";
-  arcaneForce?: number;
-  authenticForce?: number;
-}
 
 interface BossEditDialogProps {
   open: boolean;
-  /** 편집 대상 캐릭터. open=false 이거나 대상이 없으면 null. */
-  character: { ocid: string; name: string; level: number } | null;
+  /** 편집 대상 캐릭터. open=false 이거나 대상이 없으면 null. 아케인/어센틱 포스는
+   * character_cache 캐시값(MainScreenClient 의 CharacterDTO)을 그대로 내려받는다 — null 이면
+   * 아직 "동기화"로 스탯을 조회한 적이 없다는 뜻이라 비권장 배지 판정에 쓰지 않는다. */
+  character: { ocid: string; name: string; level: number; arcaneForce: number | null; authenticForce: number | null } | null;
   bossPresets: BossPresetDTO[];
   /** null = 이 캐릭터에 대한 선택 행이 하나도 없음(전체 보스 선택으로 간주). */
   initialSelected: string[] | null;
@@ -28,35 +23,18 @@ interface BossEditDialogProps {
 }
 
 /**
- * 보스 선택 편집 다이얼로그(#9). 열릴 때 편집 대상 캐릭터의 ocid로 스탯(아케인/어센틱 포스)을
- * 지연 조회한다(호버 상태창과 동일 패턴 — 전체 캐릭터를 미리 불러오지 않음).
+ * 보스 선택 편집 다이얼로그(#9). 아케인/어센틱 포스는 더 이상 라이브 조회하지 않고 호출자가
+ * character_cache 캐시값을 character prop 으로 그대로 내려준다(호버 상태창과 동일한 데이터 소스).
  * rec_hexa(권장 헥사)는 캐릭터의 헥사 스탯 데이터가 없어 판정에 쓰지 않는다(정보로도 이 화면에서는
  * 표시하지 않음 — 디자인 소스에도 힘/레벨 기준 배지만 있음).
  */
 export function BossEditDialog({ open, character, bossPresets, initialSelected, onClose, onSave }: BossEditDialogProps) {
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
-  const [stats, setStats] = useState<BossStatsState>({ status: "idle" });
 
-  // 다이얼로그가 열리거나 대상 캐릭터가 바뀌면 체크 상태를 그 캐릭터 기준으로 초기화하고
-  // 스탯을 새로 조회한다.
+  // 다이얼로그가 열리거나 대상 캐릭터가 바뀌면 체크 상태를 그 캐릭터 기준으로 초기화한다.
   useEffect(() => {
     if (!open || !character) return;
     setChecked(initialSelected === null ? new Set(bossPresets.map((b) => b.id)) : new Set(initialSelected));
-    setStats({ status: "loading" });
-
-    let cancelled = false;
-    fetchCharacterStats(character.ocid).then((result) => {
-      if (cancelled) return;
-      setStats(
-        result
-          ? { status: "loaded", arcaneForce: result.arcaneForce, authenticForce: result.authenticForce }
-          : { status: "error" }
-      );
-    });
-
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- bossPresets/initialSelected 는 open/ocid 전환 시점 스냅샷만 필요
   }, [open, character?.ocid]);
 
@@ -95,9 +73,10 @@ export function BossEditDialog({ open, character, bossPresets, initialSelected, 
             const isChecked = !locked && checked.has(boss.id);
 
             let recNote: string | null = null;
-            if (!locked && stats.status === "loaded" && boss.symbolType && boss.reqForce != null && boss.reqForce > 0) {
-              const myForce = boss.symbolType === "authentic" ? (stats.authenticForce ?? 0) : (stats.arcaneForce ?? 0);
-              if (myForce < boss.reqForce) {
+            if (!locked && boss.symbolType && boss.reqForce != null && boss.reqForce > 0) {
+              const myForce = boss.symbolType === "authentic" ? character.authenticForce : character.arcaneForce;
+              // myForce 가 null 이면 아직 "동기화"로 스탯을 조회한 적이 없다는 뜻이라 판정하지 않는다.
+              if (myForce != null && myForce < boss.reqForce) {
                 const label = boss.symbolType === "authentic" ? "어센틱 포스" : "아케인 포스";
                 recNote = `${label} ${boss.reqForce.toLocaleString()}+ 권장`;
               }

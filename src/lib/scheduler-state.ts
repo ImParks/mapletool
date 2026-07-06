@@ -70,17 +70,6 @@ export interface NormalizedSchedulerState {
   empty: boolean;
 }
 
-/** 매칭 결과의 구분(어느 그룹의 항목과 매칭됐는지) */
-export type SchedulerMatchKind = "daily" | "weekly" | "boss";
-
-/** 이름 매칭으로 찾아낸 넥슨 항목의 완료 현황 */
-export interface SchedulerMatch {
-  kind: SchedulerMatchKind;
-  name: string;
-  registered: boolean;
-  done: boolean;
-}
-
 /** 넥슨의 "true"/"false" 문자열 플래그를 boolean으로. 대소문자/공백 무시. */
 export function parseFlag(flag: string | undefined | null): boolean {
   return String(flag ?? "").trim().toLowerCase() === "true";
@@ -165,37 +154,48 @@ export function normalizeCharacterState(
 }
 
 /**
- * 우리 체크리스트 항목명으로 넥슨 스케줄러 현황에서 완료 상태를 찾는다.
+ * daily/weekly 콘텐츠 정밀 매칭. 후보 이름 배열(`PresetItem.nexonMatch` 또는
+ * `quest_presets.nexon_content_name` 1개짜리 배열) 중 하나라도 `normalizeName` 기준
+ * **정확히 일치**하는 콘텐츠를 `contents`(state.daily 또는 state.weekly)에서 찾는다.
  *
- * 매칭 정책(보수적): 이름을 공백 제거+소문자화(`normalizeName`)한 뒤
- * **정확히 일치**할 때만 매칭으로 본다. 잘못된 자동 체크(오매칭)보다,
- * 매칭 실패 시 수동 체크로 남기는 쪽이 안전하기 때문이다(하이브리드 원칙).
- * 더 느슨한 매칭이 필요하면 호출부에서 `normalizeName`을 재사용해 확장한다.
+ * 매칭 정책(보수적): 잘못된 자동 체크(오매칭)보다 매칭 실패 시 수동 체크로 남기는 쪽이
+ * 안전하다(하이브리드 원칙). 후보가 여러 개면 배열 순서대로 먼저 찾은 것을 반환한다.
  *
- * 같은 정규화 이름이 여러 그룹에 있으면 daily → weekly → boss 순으로 먼저 찾은 것을 반환한다.
- *
- * @returns 매칭된 항목의 완료 현황, 매칭 실패 시 `null`(호출부는 수동 상태 유지).
+ * @returns 매칭된 콘텐츠, 후보가 비어있거나 매칭 실패 시 `null`.
  */
-export function findSchedulerMatch(
-  state: NormalizedSchedulerState,
-  itemName: string
-): SchedulerMatch | null {
-  const target = normalizeName(itemName);
-  if (target === "") return null;
+export function findContentMatch(
+  contents: NormalizedContent[],
+  candidates: string[]
+): NormalizedContent | null {
+  const targets = candidates.map(normalizeName).filter((t) => t !== "");
+  if (targets.length === 0) return null;
 
-  for (const c of state.daily) {
-    if (normalizeName(c.name) === target) {
-      return { kind: "daily", name: c.name, registered: c.registered, done: c.done };
-    }
+  for (const c of contents) {
+    if (targets.includes(normalizeName(c.name))) return c;
   }
-  for (const c of state.weekly) {
-    if (normalizeName(c.name) === target) {
-      return { kind: "weekly", name: c.name, registered: c.registered, done: c.done };
-    }
-  }
-  for (const b of state.boss) {
-    if (normalizeName(b.name) === target) {
-      return { kind: "boss", name: b.name, registered: b.registered, done: b.done };
+  return null;
+}
+
+/**
+ * 보스 콘텐츠 정밀 매칭. `content_name`+`difficulty`가 둘 다 `normalizeName` 기준
+ * 정확히 일치하고 **`registered === true`**인 항목만 매칭으로 인정한다(registered 조건은
+ * 오매칭 방지용 추가 안전장치 — 인게임 스케줄러에 등록 안 된 보스까지 이름만으로 매칭돼
+ * 잘못 완료 처리되는 걸 막는다).
+ *
+ * @returns 매칭된 보스, 매칭 실패 시 `null`.
+ */
+export function findBossMatch(
+  bosses: NormalizedBoss[],
+  contentName: string,
+  difficulty: string
+): NormalizedBoss | null {
+  const targetName = normalizeName(contentName);
+  const targetDifficulty = normalizeName(difficulty);
+  if (targetName === "" || targetDifficulty === "") return null;
+
+  for (const b of bosses) {
+    if (b.registered && normalizeName(b.name) === targetName && normalizeName(b.difficulty) === targetDifficulty) {
+      return b;
     }
   }
   return null;

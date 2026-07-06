@@ -17,6 +17,17 @@ export interface BossPreset {
   rec_hexa: number | null;
 }
 
+/**
+ * boss_presets 의 daily/weekly 버전(quest_presets 테이블, DB). 넥슨 스케줄러에서 발견됐지만
+ * 코드 프리셋(PRESET_ITEMS)에 없는 일일/주간 콘텐츠를 담는다(discover_quest_preset RPC 로 생성).
+ */
+export interface QuestPreset {
+  id: string;
+  name: string;
+  category: Extract<ChecklistCategory, "daily" | "weekly">;
+  reset_type: ResetType;
+}
+
 export interface ChecklistItem {
   id: string;
   name: string;
@@ -24,17 +35,23 @@ export interface ChecklistItem {
   reset_type: ResetType;
 }
 
-/** daily/weekly 코드 프리셋 + boss_presets(DB) 를 CATEGORY_ORDER 순으로 합친 전체 항목 목록 */
-export function buildAllItems(bossPresets: BossPreset[]): ChecklistItem[] {
+/** daily/weekly 코드 프리셋 + quest_presets(DB) + boss_presets(DB) 를 CATEGORY_ORDER 순으로 합친 전체 항목 목록 */
+export function buildAllItems(bossPresets: BossPreset[], questPresets: QuestPreset[]): ChecklistItem[] {
   const bossItems: ChecklistItem[] = bossPresets.map((b) => ({
     id: b.id,
     name: b.name,
     category: "boss",
     reset_type: b.reset_type,
   }));
+  const questItems: ChecklistItem[] = questPresets.map((q) => ({
+    id: q.id,
+    name: q.name,
+    category: q.category,
+    reset_type: q.reset_type,
+  }));
   const byCategory: Record<ChecklistCategory, ChecklistItem[]> = {
-    daily: PRESET_ITEMS.filter((i) => i.category === "daily"),
-    weekly: PRESET_ITEMS.filter((i) => i.category === "weekly"),
+    daily: [...PRESET_ITEMS.filter((i) => i.category === "daily"), ...questItems.filter((q) => q.category === "daily")],
+    weekly: [...PRESET_ITEMS.filter((i) => i.category === "weekly"), ...questItems.filter((q) => q.category === "weekly")],
     boss: bossItems,
   };
   return CATEGORY_ORDER.flatMap((cat) => byCategory[cat]);

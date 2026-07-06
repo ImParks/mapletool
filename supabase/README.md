@@ -13,6 +13,9 @@
 | `migrations/20260702090300_seed_boss_presets.sql` | 주간 보스 프리셋 b1..b6 시드 |
 | `migrations/20260702090400_delete_own_account.sql` | 회원탈퇴 RPC `delete_own_account()` |
 | `migrations/20260702090500_admin_recent_access.sql` | 관리자 전용 RPC `admin_recent_access(p_limit)` — 최근 접속 목록(마스킹 이메일) |
+| `migrations/20260706100000_boss_preset_nexon_match.sql` | `boss_presets`에 `nexon_content_name`/`nexon_difficulty` 추가, b5(하드 스우/듄켈)→b5(하드 스우)+b7(하드 듄켈) 분리, 선택/견적 복제 |
+| `migrations/20260707100000_character_cache_and_quest_presets.sql` | 신규 테이블 `character_cache`(사용자별 캐릭터 스냅샷 캐시), `quest_presets`(boss_presets 의 daily/weekly 버전) + RLS |
+| `migrations/20260707100100_discover_preset_rpcs.sql` | `boss_presets`에 `(nexon_content_name, nexon_difficulty)` 유니크 인덱스 추가 + find-or-create RPC `discover_boss_preset()`/`discover_quest_preset()` |
 
 모두 **멱등**(`create table if not exists`, `create or replace`, `drop policy/trigger if exists`,
 `create index if not exists`, `on conflict do nothing`)이라 재적용해도 안전하다.
@@ -46,14 +49,17 @@ update public.profiles set role = 'admin' where id = '<관리자 auth.users id>'
 | --- | --- | --- |
 | `profiles` | 본인/관리자(select) | auth.users 1:1. `role`, `nickname`, `last_access_at`, `has_nexon_key`(파생 플래그) |
 | `user_secrets` | 본인 전용 | 넥슨 API 키 원문(`nexon_api_key`), `nexon_key_valid`. **관리자도 접근 불가** |
-| `boss_presets` | 공용(관리자 CRUD) | 주간 보스 프리셋. `id text`, 시드 b1..b6 |
+| `boss_presets` | 공용(관리자 CRUD) | 주간 보스 프리셋. `id text`, 시드 b1..b7(b5/b7은 "하드 스우"/"하드 듄켈"로 분리). `nexon_content_name`/`nexon_difficulty`(둘 다 nullable)로 넥슨 스케줄러 API 콘텐츠 매칭 |
 | `completions` | 본인 전용 | 완료 기록(period_key 모델). `unique(user_id, character_ocid, item_id, period_key)` |
 | `quest_durations` | 본인 전용 | 항목별 예상 소요시간(분). `unique(user_id, item_id)` |
 | `character_boss_selection` | 본인 전용 | 캐릭터별 실제 잡는 보스(행 존재=선택). `unique(user_id, character_ocid, item_id)` |
+| `character_cache` | 본인 전용 | 사용자별 캐릭터 스냅샷 캐시(이미지/전투력/포스 등). `primary key (user_id, ocid)`. 넥슨 라이브 호출 대체용 — "동기화"/"숙제 동기화"/최초 키 등록 워밍업 시에만 갱신 |
+| `quest_presets` | 공용(RPC 전용 쓰기) | `boss_presets`의 daily/weekly 버전. `id text`, 인증 사용자 전체 select, insert/update/delete는 `discover_quest_preset()` RPC로만 |
 
 `item_id`는 전부 **text**로 통일: daily/weekly는 `src/lib/presets.ts`의 코드 id(`d1..d5`,
-`w1..w3`), boss는 `boss_presets.id`. `completions.item_id`는 소스가 섞이므로 FK를 걸지 않고,
-`character_boss_selection.item_id`만 `boss_presets(id)`에 FK(보스 삭제 시 선택 정리).
+`w1..w3`) 또는 `quest_presets.id`(자동 등록분), boss는 `boss_presets.id`. `completions.item_id`는
+소스가 섞이므로 FK를 걸지 않고, `character_boss_selection.item_id`만 `boss_presets(id)`에
+FK(보스 삭제 시 선택 정리).
 
 ## 주요 설계 결정
 
@@ -124,6 +130,80 @@ v1에서는 `access_log`를 **추가하지 않았다.**
 (+ 본인 insert만 허용, 관리자 집계용 select)를 추가하는 편이 낫다. 지금 요구된 5개 지표에는
 불필요한 쓰기·저장 비용이라 도입을 보류했다.
 
+### 5) 넥슨 스케줄러 매칭 필드 — `boss_presets.nexon_content_name`/`nexon_difficulty`, b5/b7 분리
+
+넥슨 스케줄러 API(`GET /maplestory/v1/scheduler/character-state`)로 실제 완료 여부를 자동
+확인하는 기능을 위해 `boss_presets`에 `nexon_content_name text`/`nexon_difficulty text`(둘 다
+nullable)를 추가했다(`20260706100000_boss_preset_nexon_match.sql`).
+
+- **표시용 `name`과 분리한 이유**: `name`은 관리자가 자유롭게 바꿀 수 있어(관리자 CRUD, RLS
+  `boss_presets` 관리자만 update) 매칭 키로 쓰기 불안정하다. 넥슨 원문 콘텐츠명/난이도는 별도
+  컬럼으로 고정해 `name`이 바뀌어도 매칭이 깨지지 않게 한다.
+- **매칭 정책(앱 쪽 구현, `src/lib/scheduler-state.ts`)**: `nexon_content_name`과
+  `nexon_difficulty`가 **모두** 채워져 있어야 자동 매칭 대상이다. 둘 중 하나라도 null이면 안전하게
+  수동 체크로 남긴다(오매칭 방지 최우선). 그래서 b1~b4는 콘텐츠명만 베스트에포트로 채우고
+  난이도는 확신이 없어 NULL로 남겼고(관리자가 나중에 채울 수 있음), 그룹 라벨인 b6("선택 아케인")은
+  둘 다 NULL로 둔다.
+- **b5("하드 스우 / 듄켈") → b5("하드 스우") + b7("하드 듄켈") 분리**: 스케줄러 API는 스우/듄켈을
+  서로 다른 content_name으로 내려주는데, 기존 b5는 이 둘을 한 항목으로 묶어놔서 매칭 키 1개에
+  콘텐츠 2개가 걸리는 문제가 있었다(하나만 잡아도 완료로 오판할 위험). b5는 id를 유지한 채
+  "하드 스우"로 개명해 기존 `completions`/`character_boss_selection`/`quest_durations` 기록을
+  그대로 보존하고, "하드 듄켈"은 신규 id `b7`로 분리했다.
+  - `character_boss_selection`/`quest_durations`는 `item_id='b5'`인 행을 `'b7'`로도 복제
+    삽입했다(이미 있으면 무시) — "b5를 잡는다/이만큼 걸린다"는 사용자 의도를 분리된 두 보스
+    모두에 이어받게 하기 위해서다.
+  - **`completions`(완료 기록)는 절대 복제하지 않는다.** 과거 "b5 완료" 기록만으로는 "스우+듄켈
+    둘 다 잡음"인지 "하나만 잡음"인지 구분할 수 없어서, 그대로 복제하면 실제로는 안 잡은 보스가
+    "완료"로 잘못 표시될 위험이 있다. 사용자가 다음 주기부터 두 보스를 각각 새로 체크하도록
+    안전하게 남겨둔다.
+
+### 6) 캐릭터 캐시(`character_cache`) + 자동등록 프리셋(`quest_presets`) + 안전한 auto-insert RPC
+
+배경: `/main` 페이지가 매 요청마다 넥슨 API를 라이브 호출하던 것을 "DB 캐시 우선" 모델로
+전환하는 작업(전체 계획 문서 "넥슨 데이터 캐싱 + 실제 완료/스탯 동기화 + 신규 콘텐츠 자동
+등록")의 DB 파트. `20260707100000_character_cache_and_quest_presets.sql` +
+`20260707100100_discover_preset_rpcs.sql`.
+
+- **`character_cache`**: 사용자별 캐릭터 스냅샷(이미지/전투력/아케인·어센틱 포스 등)을 담는
+  캐시 테이블. `primary key (user_id, ocid)`. "동기화"/"숙제 동기화" 버튼이나 최초 키 등록
+  워밍업이 upsert 로 채우고, 평소 `/main` 진입 시에는 이 테이블만 읽어 넥슨 호출을 피한다.
+  기존 "캐릭터는 DB에 캐시하지 않는다"는 v1 원칙에서 **의도적으로 벗어나는 변경**이다 —
+  캐릭터 자체가 진실 소스(넥슨)가 아니게 되는 게 아니라, 갱신 시점을 "매 요청"에서 "사용자가
+  명시적으로 누른 버튼"으로 옮기는 캐싱 전략이다. RLS 는 다른 본인 전용 테이블과 동일하게
+  `auth.uid() = user_id`인 행만 전체 CRUD, 관리자 예외 없음.
+- **`quest_presets`**: `boss_presets`의 daily/weekly 버전. 넥슨 스케줄러가 알려주지만 코드
+  프리셋(`src/lib/presets.ts` `PRESET_ITEMS`)에 없는 일일/주간 콘텐츠를 담는다. `req_level`/
+  `req_force`/`rec_hexa`/`symbol_type` 같은 보스 전용 요구치 필드는 없다(일일/주간 퀘스트는
+  그런 스펙 요구치가 없는 콘텐츠라서). 인증 사용자 전체 select 는 허용하되, insert/update/
+  delete 는 **정책을 아예 만들지 않아 RLS 기본 deny 로 막는다**(boss_presets 처럼 "관리자만
+  허용"하는 예외 정책도 없음 — 오직 SECURITY DEFINER RPC 로만 생성 가능).
+- **왜 일반 INSERT 정책이 아니라 RPC 인가**: "숙제 동기화" 서버 액션은 일반 사용자 권한
+  (authenticated, RLS 적용)으로 실행되는데, 넥슨 응답에 없는 콘텐츠를 자동 등록해야 한다.
+  일반 사용자에게 `boss_presets`/`quest_presets` 자유 insert/update 를 허용하면 (a) 다른
+  사용자가 관리자 UI 로 큐레이션한 `req_level` 등을 덮어쓸 위험, (b) 두 사용자가 동시에 같은
+  신규 콘텐츠를 발견해 중복 행이 생길 위험이 있다. `admin_recent_access()`/
+  `delete_own_account()`와 동일한 SECURITY DEFINER 패턴으로, "이미 있으면 그 id 반환, 없으면
+  최소 기본값으로만 생성"하는 좁은 find-or-create RPC 로 제한한다.
+  - **`discover_boss_preset(p_name text, p_nexon_content_name text, p_nexon_difficulty text) returns text`**
+    — `(nexon_content_name, nexon_difficulty)` 정확 일치(대소문자/공백 정규화 없음) 조합이
+    이미 있으면 그 `id` 반환. 없으면 `req_level=0, req_force=0, rec_hexa=0, symbol_type=null,
+    reset_type='weekly_thu', list_order=현재 최댓값+1`로 신규 삽입 후 `id` 반환(요구치는 전부
+    "제한 없음"에 해당하는 최소값 — 관리자가 나중에 `updateBossPreset`으로 수정).
+  - **`discover_quest_preset(p_name text, p_category text, p_reset_type text, p_nexon_content_name text) returns text`**
+    — `(category, nexon_content_name)` 정확 일치 조합 기준으로 동일한 find-or-create.
+  - **동시성**: `boss_presets(nexon_content_name, nexon_difficulty)` / `quest_presets(category,
+    nexon_content_name)`에 유니크 인덱스를 추가하고, `insert ... on conflict do nothing
+    returning id`로 먼저 시도한 뒤 `returning`이 비면(경합으로 다른 트랜잭션이 먼저 삽입)
+    재조회해서 반환한다. 별도 advisory lock 없이 DB 유니크 제약이 최종 방어선이라, 두
+    사용자가 동시에 같은 신규 보스를 발견해도 중복 행이 생기지 않는다(로컬 검증: 두 세션이
+    동시에 같은 `(경합콘텐츠, 하드)` 조합으로 `discover_boss_preset`을 호출했을 때 둘 다 같은
+    `id`를 반환했고 최종 행은 1개였음).
+  - 두 함수 모두 SECURITY DEFINER + `search_path` 고정, `(select auth.uid())`가 null이면
+    예외(로그인 사용자만 호출), `authenticated`에만 `grant execute`(anon/public 은 revoke).
+    boss_presets 기존 컬럼(`nexon_content_name`/`nexon_difficulty`가 둘 다 NULL 인 b6, 난이도만
+    NULL 인 b1~b4)은 표준 유니크 인덱스의 "NULL은 서로 다른 값" 규칙 덕분에 새 유니크 인덱스와
+    충돌하지 않는다(로컬 검증 완료).
+
 ## 신규 가입 트리거
 
 `auth.users` INSERT → `handle_new_user`(SECURITY DEFINER)가 `profiles`를 자동 생성(`role='user'`,
@@ -132,7 +212,8 @@ v1에서는 `access_log`를 **추가하지 않았다.**
 
 ## 완료 토글 흐름 (앱 구현 가이드 — 서버에서)
 
-1. 항목의 `reset_type`을 얻는다: daily/weekly는 `presets.ts`(코드), boss는 `boss_presets.reset_type`(DB).
+1. 항목의 `reset_type`을 얻는다: daily/weekly 코드 프리셋은 `presets.ts`(코드), boss는
+   `boss_presets.reset_type`(DB), 자동 등록된 daily/weekly는 `quest_presets.reset_type`(DB).
 2. **서버에서** `currentPeriodKey(reset_type)` (`src/lib/period.ts`)로 `period_key`를 계산한다.
    클라이언트가 보낸 `period_key`/`user_id`는 신뢰하지 않는다.
 3. 완료 = `completions` INSERT `... on conflict (user_id, character_ocid, item_id, period_key) do nothing`(멱등).
@@ -180,9 +261,11 @@ anon 롤은 실행 권한 자체가 없어 차단, 기존 마이그레이션 전
 "관리자에게만" 마스킹된 이메일을 좁게 노출**한다(`20260702090500_admin_recent_access.sql`).
 
 - **반환 컬럼**: `id uuid`, `masked_email text`, `last_access_at timestamptz`. 디자인 목업의
-  "캐릭터 수"는 **포함하지 않는다** — 이 앱은 캐릭터를 DB에 캐시하지 않고 넥슨 OpenAPI를 매 요청
-  조회하므로, 전체 유저의 캐릭터 수를 한 번에 집계할 방법이 없다(알려진 설계 편차). 필요해지면
-  화면에서 유저별로 개별 조회하거나 캐릭터 캐시 테이블을 새로 설계해야 한다.
+  "캐릭터 수"는 **포함하지 않는다** — 작성 당시엔 캐릭터를 DB에 캐시하지 않고 넥슨 OpenAPI를 매
+  요청 조회했으므로, 전체 유저의 캐릭터 수를 한 번에 집계할 방법이 없었다(알려진 설계 편차).
+  이후 `character_cache`(위 "6) 캐릭터 캐시..." 참고)가 추가돼 이론적으로는 `count(*) group by
+  user_id`로 집계 가능해졌지만, 이 함수 자체는 아직 그 방식으로 갱신되지 않았다 — 필요해지면
+  `admin_recent_access()`를 확장하거나 화면에서 유저별로 개별 조회한다.
 - **왜 SECURITY DEFINER인가**: `is_admin()`/`delete_own_account()`와 동일한 이유 — 정의자
   권한으로 실행돼 `auth.users`(PostgREST 미노출) 조인을 함수 내부에서만 허용하고, 클라이언트에는
   마스킹된 결과만 반환한다. 이메일 원문은 함수 밖으로 절대 나가지 않는다.
