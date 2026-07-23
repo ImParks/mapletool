@@ -1,0 +1,116 @@
+# mapletool 배포 가이드 (Vercel + Supabase)
+
+Next.js 15 App Router 앱을 Vercel에, DB/인증은 Supabase 클라우드에 두는 구성.
+`middleware.ts`(세션 갱신)와 server actions를 쓰므로 **정적 호스팅(GitHub Pages 등)은 불가**하다.
+
+배포에 필요한 환경변수는 2개뿐이고 둘 다 공개용이다. 서버 전용 비밀키(`service_role`)는
+이 프로젝트에서 사용하지 않는다 — 모든 접근은 anon 키 + RLS로 통제된다.
+
+| 변수 | 값 | 성격 |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://<project>.supabase.co` | 공개 (브라우저 번들에 포함) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_...` | 공개 (RLS가 방어선) |
+
+---
+
+## 1. 원격 DB에 마이그레이션 적용
+
+Vercel 배포보다 **먼저** 해야 한다. 안 하면 로그인부터 실패한다.
+
+```bash
+npx supabase login          # 브라우저 인증 (access token 발급)
+npx supabase link --project-ref <project-ref>
+npx supabase migration list --linked   # Local / Remote 열 비교
+npx supabase db push                   # 미적용 마이그레이션 적용
+```
+
+`<project-ref>`는 Supabase 대시보드 URL의 `.../project/<여기>` 부분.
+마이그레이션은 전부 멱등(`if not exists`, `or replace`, `on conflict do nothing`)이라
+재적용해도 안전하다. 상세는 [`supabase/README.md`](supabase/README.md) 참고.
+
+## 2. Supabase 대시보드 설정
+
+### 2-1. 이메일 확인 끄기
+
+**Authentication → Sign In / Providers → Email → "Confirm email" OFF**
+
+켜져 있으면 `signUp()` 직후 세션이 없어서 `/main`으로 리다이렉트해도 middleware가
+로그인 화면으로 되돌린다. 사용자 입장에선 아무 안내 없이 가입이 실패한 것처럼 보인다
+(`src/app/(auth)/signup/actions.ts`의 주석 참고).
+
+> 트레이드오프: 존재하지 않는 이메일로도 가입이 가능해진다. 그런 계정은 비밀번호
+> 찾기를 쓸 수 없다. 추후 4번 항목 참고.
+
+### 2-2. 리다이렉트 URL 등록
+
+**Authentication → URL Configuration**
+
+- **Site URL**: `https://<배포도메인>`
+- **Redirect URLs**에 추가:
+  - `https://<배포도메인>/**`
+  - `https://*-<vercel-scope>.vercel.app/**` (프리뷰 배포에서도 테스트하려면)
+
+비밀번호 재설정 메일의 링크가 이 허용목록을 거친다. 등록 안 하면 링크 클릭 시
+`redirect_to` 오류가 난다. 앱은 요청 `origin` 헤더로 URL을 만들므로
+(`src/app/(auth)/find-password/actions.ts:38`) 코드 수정은 필요 없다.
+
+## 3. Vercel 배포
+
+1. [vercel.com](https://vercel.com) → GitHub 계정으로 로그인
+2. **Add New → Project** → `ImParks/mapletool` import
+3. Framework Preset이 **Next.js**로 자동 인식되는지 확인 (빌드 명령 등은 건드릴 것 없음)
+4. **Environment Variables**에 위 표의 2개를 추가 — Production / Preview / Development 전부 체크
+5. **Production Branch**를 배포할 브랜치로 지정 (Settings → Git)
+6. **Deploy**
+
+`vercel.json`이 서버 함수 리전을 서울(`icn1`)로 고정한다. Supabase 프로젝트도 서울
+리전이면 DB 왕복이 같은 지역 안에서 끝나 응답이 눈에 띄게 빠르다.
+
+> `NEXT_PUBLIC_*` 값은 **빌드 시점에 클라이언트 번들로 구워진다.** 나중에 값을 바꾸면
+> 환경변수만 수정하는 걸로는 반영되지 않고 **재배포(Redeploy)가 필요하다.**
+
+## 4. 배포 후 검증
+
+- [ ] `/signup` 회원가입 → `/main` 진입 (튕기지 않는지)
+- [ ] 로그아웃 → `/login` 재로그인
+- [ ] 새로고침 후에도 로그인 유지 (middleware의 세션 갱신이 Edge에서 도는지 확인)
+- [ ] 설정에서 넥슨 API 키 등록 → 캐릭터 목록 조회
+- [ ] 체크리스트 토글 → 새로고침 후 유지
+- [ ] 모바일 화면
+- [ ] 관리자 계정으로 `/admin` 접근, 일반 계정으로는 차단되는지
+
+### 로그인이 새로고침마다 풀린다면
+
+빌드 시 이런 경고가 나온다:
+
+```
+A Node.js API is used (process.version) which is not supported in the Edge Runtime.
+Import trace: @supabase/ssr → src/lib/supabase/middleware.ts
+```
+
+보통은 무해하지만, Vercel에서 middleware는 기본적으로 Edge 런타임에서 돈다.
+실제로 세션 갱신이 깨지면 `src/middleware.ts`에 아래를 추가해 Node 런타임으로 돌린다:
+
+```ts
+export const config = {
+  runtime: "nodejs",
+  matcher: [/* 기존 그대로 */],
+};
+```
+
+## 5. 남은 과제
+
+### 비밀번호 찾기 메일 (실사용 전 필수)
+
+Supabase 내장 SMTP는 **테스트 전용**으로, 시간당 발송량이 매우 낮게 제한된다.
+`/find-password`는 실사용자에게 사실상 동작하지 않는다고 봐야 한다.
+
+**Project Settings → Authentication → SMTP Settings**에서 커스텀 SMTP를 연결해야 한다.
+[Resend](https://resend.com)가 무난하다 (도메인 인증 후 무료 3,000통/월).
+연결 후 **Rate Limits**의 시간당 이메일 한도도 함께 올려야 한다.
+
+### 이메일 인증 재도입
+
+2-1에서 인증을 껐기 때문에 가짜 이메일 가입이 가능하다. 커스텀 SMTP를 붙인 뒤
+"Confirm email"을 다시 켜려면, 가입 직후 세션이 없는 상태를 처리할
+"메일 확인 대기" 화면과 콜백 라우트가 필요하다 (현재 미구현).
