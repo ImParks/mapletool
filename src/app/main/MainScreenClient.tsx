@@ -10,6 +10,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
 import { Switch } from "@/components/ui/Switch";
+import { useAppDialog } from "@/components/AppDialogProvider";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
 import { ChecklistSection } from "@/components/checklist/ChecklistSection";
 import { ChecklistRow } from "@/components/checklist/ChecklistRow";
@@ -110,6 +111,8 @@ export function MainScreenClient({
 }: MainScreenClientProps) {
   const router = useRouter();
   const [, startRefresh] = useTransition();
+  // 에러/안내는 전부 모달로 띄운다 — 인라인 배너로 알리면 본문이 밀려 화면 구성이 달라 보인다.
+  const { showError, showNotice } = useAppDialog();
 
   // "동기화" 버튼으로 갱신한 필드의 낙관적 override. characters(서버 prop) 자체는 건드리지 않고
   // charactersView 파생 배열에서만 병합해 화면에 반영한다.
@@ -142,7 +145,6 @@ export function MainScreenClient({
   });
   const [pendingKeys, setPendingKeys] = useState<Record<string, boolean>>({});
   const [durations, setDurations] = useState<Record<string, number>>(initialDurations);
-  const [toastError, setToastError] = useState<string | null>(null);
 
   // 캐릭터별 "실제로 잡는" 주간 보스 선택(낙관적). null = 전체 선택(행 없음).
   const [bossSelectionMap, setBossSelectionMap] = useState<Record<string, string[] | null>>(() => {
@@ -187,10 +189,10 @@ export function MainScreenClient({
   const [hoverOcid, setHoverOcid] = useState<string | null>(null);
   const [popup, setPopup] = useState<{ top: number; left: number } | null>(null);
 
-  // 캐릭터 1개 스코프 동기화 버튼(#상세 패널 헤더)의 캐릭터별 독립 pending 상태 + 결과 안내.
+  // 캐릭터 1개 스코프 동기화 버튼(#상세 패널 헤더)의 캐릭터별 독립 pending 상태.
+  // 결과 안내(성공/실패)는 상태로 들고 있지 않고 전역 알림 모달(showNotice/showError)로 띄운다.
   const [snapshotPendingOcids, setSnapshotPendingOcids] = useState<Record<string, boolean>>({});
   const [schedulePendingOcids, setSchedulePendingOcids] = useState<Record<string, boolean>>({});
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   // 캐릭터 슬라이드 "grab to scroll"(마우스 드래그로 가로 스크롤). 터치/펜은 네이티브 스크롤을 그대로 쓴다.
   const sliderRef = useRef<HTMLDivElement | null>(null);
@@ -268,12 +270,12 @@ export function MainScreenClient({
       .then((result) => {
         if ("error" in result) {
           setDoneMap((m) => ({ ...m, [key]: prev }));
-          setToastError(result.error);
+          showError(result.error);
         }
       })
       .catch(() => {
         setDoneMap((m) => ({ ...m, [key]: prev }));
-        setToastError("완료 처리 중 오류가 발생했습니다.");
+        showError("완료 처리 중 오류가 발생했습니다.");
       })
       .finally(() => {
         setPendingKeys((p) => {
@@ -299,12 +301,12 @@ export function MainScreenClient({
       .then((result) => {
         if ("error" in result) {
           setDurations((d) => ({ ...d, [itemId]: prev }));
-          setToastError(result.error);
+          showError(result.error);
         }
       })
       .catch(() => {
         setDurations((d) => ({ ...d, [itemId]: prev }));
-        setToastError("소요시간 저장 중 오류가 발생했습니다.");
+        showError("소요시간 저장 중 오류가 발생했습니다.");
       });
   }
 
@@ -338,13 +340,13 @@ export function MainScreenClient({
         if ("error" in result) {
           setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
           setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
-          setToastError(result.error);
+          showError(result.error);
         }
       })
       .catch(() => {
         setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
         setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
-        setToastError("보스 선택 저장 중 오류가 발생했습니다.");
+        showError("보스 선택 저장 중 오류가 발생했습니다.");
       });
   }
 
@@ -352,7 +354,7 @@ export function MainScreenClient({
     startResetTransition(async () => {
       const result = await resetAllCompletions();
       if ("error" in result) {
-        setToastError(result.error);
+        showError(result.error);
         return;
       }
       setDoneMap({});
@@ -371,7 +373,7 @@ export function MainScreenClient({
     startDeleteAccountTransition(async () => {
       const result = await deleteAccountAction();
       if ("error" in result) {
-        setToastError(result.error);
+        showError(result.error);
       }
     });
   }
@@ -395,9 +397,9 @@ export function MainScreenClient({
     setIsSyncing(true);
     refreshCharacterList()
       .then((result) => {
-        if ("error" in result) setToastError(result.error);
+        if ("error" in result) showError(result.error);
       })
-      .catch(() => setToastError("캐릭터 목록을 갱신하지 못했습니다."))
+      .catch(() => showError("캐릭터 목록을 갱신하지 못했습니다."))
       .finally(() => {
         setIsSyncing(false);
         // 캐릭터 목록/character_cache 가 갱신됐으니 서버 컴포넌트가 최신 값을 다시 내려주게 한다.
@@ -409,12 +411,11 @@ export function MainScreenClient({
   function handleSyncSnapshot(ocid: string) {
     if (snapshotPendingOcids[ocid]) return; // 연타 방지
     setSnapshotPendingOcids((p) => ({ ...p, [ocid]: true }));
-    setToastError(null);
 
     refreshCharacterSnapshot(ocid)
       .then((result) => {
         if ("error" in result) {
-          setToastError(result.error);
+          showError(result.error);
           return;
         }
         setCharacterOverrides((m) => ({
@@ -428,9 +429,9 @@ export function MainScreenClient({
             authenticForce: result.authenticForce,
           },
         }));
-        setSyncNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
+        showNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
       })
-      .catch(() => setToastError("캐릭터 정보를 불러오지 못했습니다."))
+      .catch(() => showError("캐릭터 정보를 불러오지 못했습니다."))
       .finally(() => {
         setSnapshotPendingOcids((p) => {
           const next = { ...p };
@@ -449,12 +450,11 @@ export function MainScreenClient({
   function handleSyncSchedule(ocid: string) {
     if (schedulePendingOcids[ocid]) return; // 연타 방지
     setSchedulePendingOcids((p) => ({ ...p, [ocid]: true }));
-    setToastError(null);
 
     syncSchedulerState(ocid)
       .then((result) => {
         if ("error" in result) {
-          setToastError(result.error);
+          showError(result.error);
           return;
         }
 
@@ -477,13 +477,13 @@ export function MainScreenClient({
         if (result.conflictItemIds.length > 0) {
           parts.push("게임에서는 아직 미완료로 표시돼요");
         }
-        setSyncNotice(parts.join(" · "));
+        showNotice(parts.join("\n"), { title: "숙제 동기화 결과" });
 
         if (result.discoveredItemIds.length > 0) {
           startRefresh(() => router.refresh());
         }
       })
-      .catch(() => setToastError("숙제 동기화 중 오류가 발생했습니다."))
+      .catch(() => showError("숙제 동기화 중 오류가 발생했습니다."))
       .finally(() => {
         setSchedulePendingOcids((p) => {
           const next = { ...p };
@@ -611,18 +611,6 @@ export function MainScreenClient({
               월드를 고르면 캐릭터가 펼쳐져요 · 캐릭터를 클릭하면 상세 숙제를 볼 수 있어요
             </p>
           </div>
-
-          {toastError && (
-            <div
-              role="alert"
-              className="flex items-center justify-between gap-3 rounded-xl bg-maple-danger-soft px-3.5 py-2.5 text-xs font-semibold text-maple-danger"
-            >
-              {toastError}
-              <button type="button" onClick={() => setToastError(null)} aria-label="닫기" className="font-extrabold">
-                ×
-              </button>
-            </div>
-          )}
 
           {characters.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-maple-line bg-maple-surface-raised px-6 py-12 text-center">
@@ -810,23 +798,6 @@ export function MainScreenClient({
                       </Button>
                     </div>
                   </div>
-
-                  {syncNotice && (
-                    <div
-                      role="status"
-                      className="flex items-center justify-between gap-3 rounded-xl bg-maple-success-soft px-3.5 py-2.5 text-xs font-semibold text-maple-success-text"
-                    >
-                      {syncNotice}
-                      <button
-                        type="button"
-                        onClick={() => setSyncNotice(null)}
-                        aria-label="닫기"
-                        className="font-extrabold"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  )}
 
                   {progressFor(selectedChar).categories.map((cat) => {
                     const visibleItems = hideDone
