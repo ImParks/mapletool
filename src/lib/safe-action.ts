@@ -35,6 +35,32 @@ export async function runAction<T>(
 }
 
 /**
+ * useActionState 에 넘길 액션(prevState, formData) => state 를 감싼다.
+ *
+ * useActionState 는 액션이 던진 예외를 **렌더 중에 다시 던져** 가장 가까운 error boundary 로
+ * 올린다. 그래서 폼 하나가 실패했을 뿐인데 화면 전체가 에러 페이지로 교체된다
+ * (프로덕션에서는 "Application error: a server-side exception has occurred" + Digest).
+ * 이 래퍼가 예외를 폼 상태로 바꿔 화면 안에서 안내되게 한다.
+ *
+ * @param toErrorState 에러 메시지를 해당 폼의 state 모양으로 감싸는 함수
+ */
+export function safeFormAction<S>(
+  action: (prevState: S, formData: FormData) => Promise<S>,
+  toErrorState: (message: string) => S,
+  fallbackMessage: string
+): (prevState: S, formData: FormData) => Promise<S> {
+  return async (prevState, formData) => {
+    try {
+      return await action(prevState, formData);
+    } catch (error) {
+      if (isNextControlFlowError(error)) throw error;
+      console.error(error);
+      return toErrorState(fallbackMessage);
+    }
+  };
+}
+
+/**
  * 반환값이 없는(성공 시 redirect 하는) 액션용. 실패하면 에러 메시지를 돌려주고, 성공하면
  * null 을 돌려준다.
  */

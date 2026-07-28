@@ -1,12 +1,14 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { readSupabaseEnv } from "./env";
 
 export async function createClient() {
   const cookieStore = await cookies();
+  const { url, anonKey } = readSupabaseEnv();
 
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url,
+    anonKey,
     {
       cookies: {
         getAll() {
@@ -28,10 +30,6 @@ export async function createClient() {
   );
 }
 
-/** 환경변수가 설정되어 있는지 확인 (설정 안내 화면 분기용) */
-export function isSupabaseConfigured() {
-  return (
-    !!process.env.NEXT_PUBLIC_SUPABASE_URL &&
-    !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  );
-}
+// 환경변수 검증은 Edge 런타임(middleware)에서도 필요해 ./env 로 옮겼다. 기존 import 경로
+// (`@/lib/supabase/server`)를 유지하기 위해 여기서 다시 내보낸다.
+export { isSupabaseConfigured } from "./env";

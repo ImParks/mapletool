@@ -5,14 +5,22 @@ import { Mail, Lock, User } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { safeFormAction } from "@/lib/safe-action";
 import { signupAction, type SignupState } from "./actions";
 
 // "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
 // 이 클라이언트 컴포넌트에 둔다.
 const initialSignupState: SignupState = { error: null };
 
+// 액션이 던진 예외가 화면 전체를 에러 페이지로 바꾸지 않게 폼 상태로 흡수한다.
+const safeSignupAction = safeFormAction<SignupState>(
+  signupAction,
+  (message) => ({ error: message }),
+  "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+);
+
 export function SignupForm() {
-  const [state, formAction, isPending] = useActionState(signupAction, initialSignupState);
+  const [state, formAction, isPending] = useActionState(safeSignupAction, initialSignupState);
   const [agree, setAgree] = useState(false);
 
   return (

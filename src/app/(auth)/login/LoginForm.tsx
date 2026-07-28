@@ -7,6 +7,7 @@ import { Mail, Lock } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { safeFormAction } from "@/lib/safe-action";
 import { loginAction, type LoginState } from "./actions";
 
 const REMEMBER_EMAIL_KEY = "mapletool:rememberedEmail";
@@ -14,8 +15,15 @@ const REMEMBER_EMAIL_KEY = "mapletool:rememberedEmail";
 // 이 클라이언트 컴포넌트에 둔다.
 const initialLoginState: LoginState = { error: null };
 
+// 액션이 던진 예외가 화면 전체를 에러 페이지로 바꾸지 않게 폼 상태로 흡수한다.
+const safeLoginAction = safeFormAction<LoginState>(
+  loginAction,
+  (message) => ({ error: message }),
+  "로그인 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+);
+
 export function LoginForm() {
-  const [state, formAction, isPending] = useActionState(loginAction, initialLoginState);
+  const [state, formAction, isPending] = useActionState(safeLoginAction, initialLoginState);
   const [rememberId, setRememberId] = useState(true);
   const [email, setEmail] = useState("");
 

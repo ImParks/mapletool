@@ -47,23 +47,34 @@ export async function signupAction(_prevState: SignupState, formData: FormData):
     return { error: ENV_MISSING_ERROR };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: nickname ? { nickname } : undefined,
-    },
-  });
+  // 외부 의존(Supabase) 구간만 감싼다 — redirect() 는 예외를 던져 동작하므로 try 밖에 둬야 한다.
+  // 잡지 않으면 액션이 500 으로 끝나고 화면 전체가 에러 페이지로 교체된다.
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: nickname ? { nickname } : undefined,
+      },
+    });
 
-  if (error) {
-    if (error.code === "user_already_exists" || error.code === "email_exists") {
-      return { error: "이미 가입된 이메일입니다." };
+    if (error) {
+      console.error("[signup] signUp failed:", error);
+      if (error.code === "user_already_exists" || error.code === "email_exists") {
+        return { error: "이미 가입된 이메일입니다." };
+      }
+      if (error.code === "weak_password") {
+        return { error: "비밀번호가 너무 약합니다. 다른 비밀번호를 입력해 주세요." };
+      }
+      if (error.status === 429) {
+        return { error: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." };
+      }
+      return { error: "회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." };
     }
-    if (error.code === "weak_password") {
-      return { error: "비밀번호가 너무 약합니다. 다른 비밀번호를 입력해 주세요." };
-    }
-    return { error: "회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." };
+  } catch (error) {
+    console.error("[signup] unexpected failure:", error);
+    return { error: "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." };
   }
 
   // 참고: Supabase 프로젝트에서 "이메일 확인(Confirm email)" 설정이 켜져 있으면 signUp() 직후

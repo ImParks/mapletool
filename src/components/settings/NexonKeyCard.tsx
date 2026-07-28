@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { deleteNexonKey, saveNexonKey, type NexonKeyState } from "@/app/main/nexon-key-actions";
-import { runVoidAction } from "@/lib/safe-action";
+import { runVoidAction, safeFormAction } from "@/lib/safe-action";
 
 // "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
 // 이 클라이언트 컴포넌트에 둔다.
@@ -19,18 +19,11 @@ const initialNexonKeyState: NexonKeyState = { error: null, success: false };
  * 키 등록에 실패했을 뿐인데 화면 전체가 에러 페이지로 바뀌었다. 여기서 흡수해 폼 안의 에러
  * 문구로만 보여준다.
  */
-async function saveNexonKeySafe(prevState: NexonKeyState, formData: FormData): Promise<NexonKeyState> {
-  try {
-    return await saveNexonKey(prevState, formData);
-  } catch (error) {
-    console.error(error);
-    return {
-      error:
-        "키 등록 처리가 완료되지 못했습니다. 캐릭터 수가 많으면 시간이 초과될 수 있어요 — 잠시 후 다시 시도하거나, 화면을 새로고침해 등록 여부를 확인해 주세요.",
-      success: false,
-    };
-  }
-}
+const saveNexonKeySafe = safeFormAction<NexonKeyState>(
+  saveNexonKey,
+  (message) => ({ error: message, success: false }),
+  "키 등록 처리가 완료되지 못했습니다. 캐릭터 수가 많으면 시간이 초과될 수 있어요 — 잠시 후 다시 시도하거나, 화면을 새로고침해 등록 여부를 확인해 주세요."
+);
 
 interface NexonKeyCardProps {
   /** 등록된 키가 있는지(서버에서 이미 조회한 값). 원문은 절대 이 컴포넌트에 넘기지 않는다. */

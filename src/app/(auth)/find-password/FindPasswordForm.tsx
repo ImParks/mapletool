@@ -6,14 +6,22 @@ import { Mail, Check } from "lucide-react";
 import { Button, buttonClassName } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import { safeFormAction } from "@/lib/safe-action";
 import { findPasswordAction, type FindPasswordState } from "./actions";
 
 // "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
 // 이 클라이언트 컴포넌트에 둔다.
 const initialFindPasswordState: FindPasswordState = { status: "idle", error: null };
 
+// 액션이 던진 예외가 화면 전체를 에러 페이지로 바꾸지 않게 폼 상태로 흡수한다.
+const safeFindPasswordAction = safeFormAction<FindPasswordState>(
+  findPasswordAction,
+  (message) => ({ status: "idle", error: message }),
+  "메일 전송을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."
+);
+
 export function FindPasswordForm() {
-  const [state, formAction, isPending] = useActionState(findPasswordAction, initialFindPasswordState);
+  const [state, formAction, isPending] = useActionState(safeFindPasswordAction, initialFindPasswordState);
 
   if (state.status === "sent") {
     return (
