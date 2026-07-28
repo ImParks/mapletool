@@ -51,8 +51,14 @@ npx supabase db push                   # 미적용 마이그레이션 적용
   - `https://*-<vercel-scope>.vercel.app/**` (프리뷰 배포에서도 테스트하려면)
 
 비밀번호 재설정 메일의 링크가 이 허용목록을 거친다. 등록 안 하면 링크 클릭 시
-`redirect_to` 오류가 난다. 앱은 요청 `origin` 헤더로 URL을 만들므로
-(`src/app/(auth)/find-password/actions.ts:38`) 코드 수정은 필요 없다.
+`redirect_to` 오류가 난다. 앱은 요청 `origin` 헤더로 URL을 만들므로 코드 수정은 필요 없다.
+
+실제 링크가 향하는 곳은 **`<도메인>/auth/callback?next=/reset-password`** 다. 위처럼
+`/**` 와일드카드로 등록해 두면 이 경로도 함께 허용된다(개별 등록 불필요).
+
+> 재설정 링크는 **메일을 요청한 것과 같은 브라우저**에서 열어야 한다. PKCE 흐름이라
+> code verifier 쿠키가 그 브라우저에만 있기 때문. 다른 기기/브라우저에서 열면
+> `/reset-password`가 "링크가 만료되었어요" 안내로 대체된다.
 
 ## 3. Vercel 배포
 
@@ -78,6 +84,7 @@ npx supabase db push                   # 미적용 마이그레이션 적용
 - [ ] 체크리스트 토글 → 새로고침 후 유지
 - [ ] 모바일 화면
 - [ ] 관리자 계정으로 `/admin` 접근, 일반 계정으로는 차단되는지
+- [ ] `/find-password` → 메일 링크 클릭 → `/reset-password`에서 새 비밀번호 저장 → 새 비밀번호로 로그인
 
 ### 로그인이 새로고침마다 풀린다면
 
@@ -100,10 +107,12 @@ export const config = {
 
 ## 5. 남은 과제
 
-### 비밀번호 찾기 메일 (실사용 전 필수)
+### 비밀번호 찾기 메일 — 커스텀 SMTP (실사용 전 필수)
 
-Supabase 내장 SMTP는 **테스트 전용**으로, 시간당 발송량이 매우 낮게 제한된다.
-`/find-password`는 실사용자에게 사실상 동작하지 않는다고 봐야 한다.
+재설정 흐름(`/find-password` → `/auth/callback` → `/reset-password`) 자체는 구현돼 있다.
+남은 건 **메일이 실제로 나가느냐**다. Supabase 내장 SMTP는 **테스트 전용**으로, 시간당
+발송량이 매우 낮게 제한된다. 그대로 두면 실사용자에게는 사실상 동작하지 않는다.
+(한도를 넘기면 앱은 "메일 발송 한도를 초과했습니다" 안내를 보여준다.)
 
 **Project Settings → Authentication → SMTP Settings**에서 커스텀 SMTP를 연결해야 한다.
 [Resend](https://resend.com)가 무난하다 (도메인 인증 후 무료 3,000통/월).

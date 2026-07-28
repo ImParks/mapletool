@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { PASSWORD_RULE_MESSAGE, isValidEmail, isValidPassword } from "@/lib/validation";
 
 export interface SignupState {
   error: string | null;
@@ -10,14 +11,6 @@ export interface SignupState {
 // env 미설정 시 500 스택트레이스 대신 폼에 명확한 안내를 돌려준다(login/actions.ts 와 동일 방침).
 const ENV_MISSING_ERROR =
   "서버에 Supabase 환경변수가 설정되지 않았습니다. .env(.env.local)의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 값을 확인해 주세요.";
-
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
-function isValidPassword(value: string): boolean {
-  return value.length >= 8 && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
-}
 
 /**
  * Supabase Auth 회원가입. 닉네임은 `raw_user_meta_data ->> 'nickname'` 로 읽는
@@ -35,7 +28,7 @@ export async function signupAction(_prevState: SignupState, formData: FormData):
     return { error: "올바른 이메일 주소를 입력해 주세요." };
   }
   if (!isValidPassword(password)) {
-    return { error: "비밀번호는 영문 · 숫자 조합 8자 이상이어야 합니다." };
+    return { error: PASSWORD_RULE_MESSAGE };
   }
   if (password !== passwordConfirm) {
     return { error: "비밀번호가 일치하지 않습니다." };

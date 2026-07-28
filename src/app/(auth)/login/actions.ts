@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isValidEmail } from "@/lib/validation";
 
 export interface LoginState {
   error: string | null;
@@ -11,10 +12,6 @@ export interface LoginState {
 // 한국어 안내를 돌려준다(.env 인코딩 문제 등 설정 실수를 빠르게 알아차릴 수 있게).
 const ENV_MISSING_ERROR =
   "서버에 Supabase 환경변수가 설정되지 않았습니다. .env(.env.local)의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 값을 확인해 주세요.";
-
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
 
 /**
  * 이메일/비밀번호로 Supabase Auth 로그인을 시도한다. 성공 시 세션 쿠키가 설정되고

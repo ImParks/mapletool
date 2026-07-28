@@ -2,6 +2,7 @@
 
 import { headers } from "next/headers";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isValidEmail } from "@/lib/validation";
 
 export interface FindPasswordState {
   status: "idle" | "sent";
@@ -12,14 +13,14 @@ export interface FindPasswordState {
 const ENV_MISSING_ERROR =
   "서버에 Supabase 환경변수가 설정되지 않았습니다. .env(.env.local)의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 값을 확인해 주세요.";
 
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
 /**
- * 비밀번호 재설정 메일 발송. 재설정 링크가 이동할 "새 비밀번호 입력" 콜백 화면은 이번 단계
- * 범위 밖(설계 문서에도 없음)이라 아직 없다 — 우선 로그인 화면으로 리다이렉트하도록 설정해
- * 두고, 콜백 라우트는 다음 단계에서 별도로 구현해야 한다.
+ * 비밀번호 재설정 메일 발송.
+ *
+ * 메일 링크의 최종 목적지는 `/auth/callback?next=/reset-password` 다 — 콜백이 일회용 코드를
+ * 세션 쿠키로 교환하고, `/reset-password` 가 그 세션으로 새 비밀번호를 저장한다.
+ * 주의: PKCE 흐름이라 **메일을 요청한 것과 같은 브라우저**에서 링크를 열어야 한다
+ * (code verifier 쿠키가 그 브라우저에만 있다). 다른 브라우저에서 열면 재설정 화면이
+ * "링크가 만료되었어요" 안내로 대체된다.
  */
 export async function findPasswordAction(
   _prevState: FindPasswordState,
@@ -42,9 +43,11 @@ export async function findPasswordAction(
     const headerList = await headers();
     const origin = headerList.get("origin") ?? `https://${headerList.get("host") ?? ""}`;
 
+    // 메일 링크는 /auth/callback 으로 보낸다 — 거기서 일회용 코드를 세션 쿠키로 교환한 뒤
+    // ?next 의 화면으로 넘긴다. (예전에는 /login 으로 보내서, 링크를 눌러도 재설정 화면이
+    // 나오지 않고 그냥 로그인 폼이 떴다.)
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      // TODO: 다음 단계에서 실제 "새 비밀번호 입력" 콜백 라우트가 생기면 그 경로로 교체.
-      redirectTo: `${origin}/login`,
+      redirectTo: `${origin}/auth/callback?next=%2Freset-password`,
     });
 
     if (error) {
