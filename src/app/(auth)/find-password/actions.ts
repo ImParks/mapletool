@@ -1,7 +1,7 @@
 "use server";
 
-import { headers } from "next/headers";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { resolveSiteOrigin } from "@/lib/site-url";
 import { isValidEmail } from "@/lib/validation";
 
 export interface FindPasswordState {
@@ -40,12 +40,16 @@ export async function findPasswordAction(
   // 교체된다(사용자에게는 원인이 전혀 보이지 않는다). 로그에는 남기고 폼에는 안내를 돌려준다.
   try {
     const supabase = await createClient();
-    const headerList = await headers();
-    const origin = headerList.get("origin") ?? `https://${headerList.get("host") ?? ""}`;
+    const origin = await resolveSiteOrigin();
 
     // 메일 링크는 /auth/callback 으로 보낸다 — 거기서 일회용 코드를 세션 쿠키로 교환한 뒤
     // ?next 의 화면으로 넘긴다. (예전에는 /login 으로 보내서, 링크를 눌러도 재설정 화면이
     // 나오지 않고 그냥 로그인 폼이 떴다.)
+    //
+    // 주의: 이 주소가 Supabase 의 **Redirect URL 허용목록에 없으면 에러가 아니라 Site URL 로
+    // 조용히 폴백**한다(그러면 링크가 `<Site URL>/?code=...` 로 떨어져 아무 화면도 처리하지
+    // 못한다). 로컬은 supabase/config.toml 의 additional_redirect_urls, 배포 환경은 대시보드의
+    // Authentication → URL Configuration 에 등록돼 있어야 한다. DEPLOY.md 2-2 참고.
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${origin}/auth/callback?next=%2Freset-password`,
     });

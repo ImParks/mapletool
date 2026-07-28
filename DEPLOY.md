@@ -10,6 +10,7 @@ Next.js 15 App Router 앱을 Vercel에, DB/인증은 Supabase 클라우드에 �
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://<project>.supabase.co` | 공개 (브라우저 번들에 포함) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_...` | 공개 (RLS가 방어선) |
+| `NEXT_PUBLIC_SITE_URL` *(선택)* | `https://<배포도메인>` | 공개 · 메일 링크 주소 고정용 (2-2 참고) |
 
 ---
 
@@ -50,11 +51,26 @@ npx supabase db push                   # 미적용 마이그레이션 적용
   - `https://<배포도메인>/**`
   - `https://*-<vercel-scope>.vercel.app/**` (프리뷰 배포에서도 테스트하려면)
 
-비밀번호 재설정 메일의 링크가 이 허용목록을 거친다. 등록 안 하면 링크 클릭 시
-`redirect_to` 오류가 난다. 앱은 요청 `origin` 헤더로 URL을 만들므로 코드 수정은 필요 없다.
+비밀번호 재설정 메일의 링크가 이 허용목록을 거친다. 실제 링크가 향하는 곳은
+**`<도메인>/auth/callback?next=/reset-password`** 이고, 위처럼 `/**` 와일드카드로 등록해
+두면 이 경로도 함께 허용된다(개별 등록 불필요). 앱은 요청 `origin` 헤더로 URL을 만들므로
+코드 수정은 필요 없다.
 
-실제 링크가 향하는 곳은 **`<도메인>/auth/callback?next=/reset-password`** 다. 위처럼
-`/**` 와일드카드로 등록해 두면 이 경로도 함께 허용된다(개별 등록 불필요).
+> **⚠️ 이 설정을 빠뜨리면 에러가 안 난다.** Supabase는 허용목록에 없는 `redirect_to`를
+> 거부하면서 **조용히 Site URL로 폴백**한다. 그러면 메일 링크가 `<Site URL>/?code=...`로
+> 떨어지고, 사용자 눈에는 "링크를 눌렀는데 재설정 화면이 아니라 그냥 첫 화면/로그인 화면이
+> 뜬다"로 보인다. 로그에도 아무것도 안 남으니 원인 찾기가 어렵다.
+>
+> 그래서 앱 미들웨어에 안전망을 뒀다 — `/` 나 `/login`에 `code`/`token_hash`가 붙어 들어오면
+> `/auth/callback`으로 돌려보낸다(`src/lib/supabase/middleware.ts`). 다만 이건 어디까지나
+> 보험이고, **Site URL과 Redirect URLs는 반드시 제대로 등록해야 한다.**
+
+Site URL을 실제 배포 도메인으로 바꾸는 것도 잊지 말 것. 기본값(`http://localhost:3000`)으로
+두면 폴백이 일어날 때 사용자가 로컬 주소로 보내진다.
+
+커스텀 도메인을 쓰거나 프록시 뒤에 있어 요청 헤더의 호스트가 실제 공개 주소와 다르면,
+Vercel 환경변수에 `NEXT_PUBLIC_SITE_URL=https://<도메인>`(끝 슬래시 없이)을 추가해 고정할 수
+있다. 비워두면 요청 `origin`을 쓰므로 프로덕션·프리뷰 모두 자동으로 맞는다.
 
 > 재설정 링크는 **메일을 요청한 것과 같은 브라우저**에서 열어야 한다. PKCE 흐름이라
 > code verifier 쿠키가 그 브라우저에만 있기 때문. 다른 기기/브라우저에서 열면
