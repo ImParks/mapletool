@@ -7,6 +7,7 @@ import Image from "next/image";
 import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon, Shield } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
+import { ErrorDialog } from "@/components/ui/ErrorDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
 import { Switch } from "@/components/ui/Switch";
@@ -24,6 +25,7 @@ import {
 import { CATEGORY_LABEL, CATEGORY_ORDER, type ChecklistCategory } from "@/lib/presets";
 import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
+import { runAction, runVoidAction } from "@/lib/safe-action";
 import { refreshCharacterSnapshot, saveDuration, syncSchedulerState, toggleCompletion } from "./actions";
 import { saveBossSelection } from "./boss-selection-actions";
 import { refreshCharacterList } from "./nexon-key-actions";
@@ -142,7 +144,7 @@ export function MainScreenClient({
   });
   const [pendingKeys, setPendingKeys] = useState<Record<string, boolean>>({});
   const [durations, setDurations] = useState<Record<string, number>>(initialDurations);
-  const [toastError, setToastError] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // 캐릭터별 "실제로 잡는" 주간 보스 선택(낙관적). null = 전체 선택(행 없음).
   const [bossSelectionMap, setBossSelectionMap] = useState<Record<string, string[] | null>>(() => {
@@ -264,16 +266,12 @@ export function MainScreenClient({
     setDoneMap((m) => ({ ...m, [key]: !prev }));
     setPendingKeys((p) => ({ ...p, [key]: true }));
 
-    toggleCompletion(ocid, itemId)
+    runAction(() => toggleCompletion(ocid, itemId), "완료 처리 중 오류가 발생했습니다.")
       .then((result) => {
         if ("error" in result) {
           setDoneMap((m) => ({ ...m, [key]: prev }));
-          setToastError(result.error);
+          setErrorMessage(result.error);
         }
-      })
-      .catch(() => {
-        setDoneMap((m) => ({ ...m, [key]: prev }));
-        setToastError("완료 처리 중 오류가 발생했습니다.");
       })
       .finally(() => {
         setPendingKeys((p) => {
@@ -295,17 +293,12 @@ export function MainScreenClient({
   function handleDurationSave(itemId: string, minutes: number) {
     const prev = durations[itemId] ?? 0;
     setDurations((d) => ({ ...d, [itemId]: minutes }));
-    saveDuration(itemId, minutes)
-      .then((result) => {
-        if ("error" in result) {
-          setDurations((d) => ({ ...d, [itemId]: prev }));
-          setToastError(result.error);
-        }
-      })
-      .catch(() => {
+    runAction(() => saveDuration(itemId, minutes), "소요시간 저장 중 오류가 발생했습니다.").then((result) => {
+      if ("error" in result) {
         setDurations((d) => ({ ...d, [itemId]: prev }));
-        setToastError("소요시간 저장 중 오류가 발생했습니다.");
-      });
+        setErrorMessage(result.error);
+      }
+    });
   }
 
   /**
@@ -333,26 +326,25 @@ export function MainScreenClient({
       return next;
     });
 
-    saveBossSelection(ocid, selectedItemIds)
-      .then((result) => {
+    runAction(() => saveBossSelection(ocid, selectedItemIds), "보스 선택 저장 중 오류가 발생했습니다.").then(
+      (result) => {
         if ("error" in result) {
           setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
           setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
-          setToastError(result.error);
+          setErrorMessage(result.error);
         }
-      })
-      .catch(() => {
-        setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
-        setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
-        setToastError("보스 선택 저장 중 오류가 발생했습니다.");
-      });
+      }
+    );
   }
 
+  // 아래 세 핸들러는 모두 "모달 안에서 누르는 버튼"이다. 예전에는 액션이 던진 예외를 잡지
+  // 않아서(트랜지션 밖으로 전파 → error.tsx) 버튼 하나 실패에 화면 전체가 에러 페이지로
+  // 교체됐다. runAction/runVoidAction 으로 예외를 메시지로 바꿔 에러 모달에만 띄운다.
   function handleConfirmReset() {
     startResetTransition(async () => {
-      const result = await resetAllCompletions();
+      const result = await runAction(() => resetAllCompletions(), "완료 기록 초기화 중 오류가 발생했습니다.");
       if ("error" in result) {
-        setToastError(result.error);
+        setErrorMessage(result.error);
         return;
       }
       setDoneMap({});
@@ -363,15 +355,17 @@ export function MainScreenClient({
 
   function handleLogout() {
     startSignOutTransition(async () => {
-      await signOutAction();
+      // 성공 시 signOutAction 이 redirect("/login") 하므로 이 아래로는 오지 않는다.
+      const error = await runVoidAction(() => signOutAction(), "로그아웃 중 오류가 발생했습니다.");
+      if (error) setErrorMessage(error);
     });
   }
 
   function handleConfirmDeleteAccount() {
     startDeleteAccountTransition(async () => {
-      const result = await deleteAccountAction();
+      const result = await runAction(() => deleteAccountAction(), "회원탈퇴 처리 중 오류가 발생했습니다.");
       if ("error" in result) {
-        setToastError(result.error);
+        setErrorMessage(result.error);
       }
     });
   }
@@ -393,11 +387,10 @@ export function MainScreenClient({
   function handleSync() {
     if (isSyncing) return; // 연타 방지
     setIsSyncing(true);
-    refreshCharacterList()
+    runAction(() => refreshCharacterList(), "캐릭터 목록을 갱신하지 못했습니다.")
       .then((result) => {
-        if ("error" in result) setToastError(result.error);
+        if ("error" in result) setErrorMessage(result.error);
       })
-      .catch(() => setToastError("캐릭터 목록을 갱신하지 못했습니다."))
       .finally(() => {
         setIsSyncing(false);
         // 캐릭터 목록/character_cache 가 갱신됐으니 서버 컴포넌트가 최신 값을 다시 내려주게 한다.
@@ -409,12 +402,12 @@ export function MainScreenClient({
   function handleSyncSnapshot(ocid: string) {
     if (snapshotPendingOcids[ocid]) return; // 연타 방지
     setSnapshotPendingOcids((p) => ({ ...p, [ocid]: true }));
-    setToastError(null);
+    setErrorMessage(null);
 
-    refreshCharacterSnapshot(ocid)
+    runAction(() => refreshCharacterSnapshot(ocid), "캐릭터 정보를 불러오지 못했습니다.")
       .then((result) => {
         if ("error" in result) {
-          setToastError(result.error);
+          setErrorMessage(result.error);
           return;
         }
         setCharacterOverrides((m) => ({
@@ -430,7 +423,6 @@ export function MainScreenClient({
         }));
         setSyncNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
       })
-      .catch(() => setToastError("캐릭터 정보를 불러오지 못했습니다."))
       .finally(() => {
         setSnapshotPendingOcids((p) => {
           const next = { ...p };
@@ -449,12 +441,12 @@ export function MainScreenClient({
   function handleSyncSchedule(ocid: string) {
     if (schedulePendingOcids[ocid]) return; // 연타 방지
     setSchedulePendingOcids((p) => ({ ...p, [ocid]: true }));
-    setToastError(null);
+    setErrorMessage(null);
 
-    syncSchedulerState(ocid)
+    runAction(() => syncSchedulerState(ocid), "숙제 동기화 중 오류가 발생했습니다.")
       .then((result) => {
         if ("error" in result) {
-          setToastError(result.error);
+          setErrorMessage(result.error);
           return;
         }
 
@@ -483,7 +475,6 @@ export function MainScreenClient({
           startRefresh(() => router.refresh());
         }
       })
-      .catch(() => setToastError("숙제 동기화 중 오류가 발생했습니다."))
       .finally(() => {
         setSchedulePendingOcids((p) => {
           const next = { ...p };
@@ -611,18 +602,6 @@ export function MainScreenClient({
               월드를 고르면 캐릭터가 펼쳐져요 · 캐릭터를 클릭하면 상세 숙제를 볼 수 있어요
             </p>
           </div>
-
-          {toastError && (
-            <div
-              role="alert"
-              className="flex items-center justify-between gap-3 rounded-xl bg-maple-danger-soft px-3.5 py-2.5 text-xs font-semibold text-maple-danger"
-            >
-              {toastError}
-              <button type="button" onClick={() => setToastError(null)} aria-label="닫기" className="font-extrabold">
-                ×
-              </button>
-            </div>
-          )}
 
           {characters.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-maple-line bg-maple-surface-raised px-6 py-12 text-center">
@@ -1104,6 +1083,9 @@ export function MainScreenClient({
         onClose={() => setBossEditOcid(null)}
         onSave={handleSaveBossSelection}
       />
+
+      {/* 다른 모든 모달(z-400) 위에 뜨는 공통 에러 모달. */}
+      <ErrorDialog message={errorMessage} onClose={() => setErrorMessage(null)} />
     </div>
   );
 }

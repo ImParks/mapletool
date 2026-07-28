@@ -14,6 +14,7 @@ export default function MainError({ error, reset }: { error: Error & { digest?: 
       <p className="max-w-[32ch] text-sm text-maple-text-secondary">
         메인 화면을 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.
       </p>
+      {error.digest && <p className="font-mono text-[11px] text-maple-text-muted">오류 코드: {error.digest}</p>}
       <Button variant="primary" onClick={reset}>
         다시 시도
       </Button>

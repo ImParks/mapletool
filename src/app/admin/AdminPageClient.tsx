@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/Input";
 import { Logo } from "@/components/ui/Logo";
 import { cn } from "@/lib/cn";
 import { clampInt } from "@/lib/num";
+import { runAction } from "@/lib/safe-action";
 import { addBossPreset, updateBossPreset, type BossPresetFields } from "./boss-preset-actions";
 
 export interface AdminStatDTO {
@@ -164,7 +165,9 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
   function handleSave() {
     setError(null);
     startTransition(async () => {
-      const result = await updateBossPreset(preset.id, draft);
+      // runAction 으로 감싸지 않으면 호출 자체가 실패했을 때(타임아웃/네트워크/재배포로 인한
+      // Server Action ID 불일치) 예외가 error boundary 까지 올라가 화면 전체가 교체된다.
+      const result = await runAction(() => updateBossPreset(preset.id, draft), "저장 중 오류가 발생했습니다.");
       if ("error" in result) {
         setError(result.error);
         return;
@@ -335,7 +338,7 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
         nexonContentName: form.nexonContentName,
         nexonDifficulty: form.nexonDifficulty,
       };
-      const result = await addBossPreset({ name, ...fields });
+      const result = await runAction(() => addBossPreset({ name, ...fields }), "보스 추가 중 오류가 발생했습니다.");
       if ("error" in result) {
         setAddError(result.error);
         return;

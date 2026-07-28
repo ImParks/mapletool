@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useId, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
+
+/**
+ * 현재 열려 있는 Dialog 들의 스택. 에러 모달처럼 모달 위에 모달이 겹칠 수 있으므로, ESC 는
+ * **가장 위에 있는 하나만** 닫아야 한다(전부 각자 window 리스너를 달면 ESC 한 번에 아래 모달까지
+ * 함께 닫혀, 사용자에겐 설정 화면이 통째로 사라진 것처럼 보인다).
+ */
+const openDialogStack: symbol[] = [];
 
 interface DialogProps {
   open: boolean;
@@ -12,6 +19,11 @@ interface DialogProps {
   children: ReactNode;
   /** 다이얼로그 카드 최대 폭 클래스. 기본 440px(설정/확인 다이얼로그 기준). */
   widthClassName?: string;
+  /**
+   * 겹침 순서 클래스. 기본 z-[400](일반 모달). 에러 모달처럼 "이미 열린 모달 위에" 떠야 하는
+   * 경우에만 더 높은 값을 넘긴다(ErrorDialog 참고).
+   */
+  zIndexClassName?: string;
 }
 
 /**
@@ -19,23 +31,42 @@ interface DialogProps {
  * 등장 애니메이션은 디자인 핸드오프의 페이드/라이즈를 그대로 따른다(프로토타입의 강제 무효화
  * 오버라이드는 프로토타입 뷰어 전용 땜빵이라 옮기지 않는다).
  */
-export function Dialog({ open, title, description, onClose, children, widthClassName }: DialogProps) {
+export function Dialog({
+  open,
+  title,
+  description,
+  onClose,
+  children,
+  widthClassName,
+  zIndexClassName,
+}: DialogProps) {
   const titleId = useId();
   const descriptionId = useId();
+  const instanceId = useRef<symbol>(Symbol("dialog"));
 
   useEffect(() => {
     if (!open) return;
+    const id = instanceId.current;
+    openDialogStack.push(id);
+
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      // 최상단 모달만 반응한다.
+      if (openDialogStack[openDialogStack.length - 1] !== id) return;
+      onClose();
     }
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      const index = openDialogStack.lastIndexOf(id);
+      if (index !== -1) openDialogStack.splice(index, 1);
+    };
   }, [open, onClose]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center px-4 py-8">
+    <div className={cn("fixed inset-0 flex items-center justify-center px-4 py-8", zIndexClassName ?? "z-[400]")}>
       <div
         aria-hidden="true"
         className="fixed inset-0 animate-maple-fade bg-maple-surface-scrim motion-reduce:animate-none"

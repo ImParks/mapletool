@@ -15,6 +15,12 @@ import { MainScreenClient, type BossPresetDTO, type CharacterDTO, type Checklist
 // 명시적으로 강제한다.
 export const dynamic = "force-dynamic";
 
+// 이 세그먼트에서 호출되는 server action 에도 적용된다. 넥슨 키 최초 등록(saveNexonKey)은
+// 계정의 모든 캐릭터를 순차 워밍업하므로 기본 실행시간 제한(호스팅 플랜에 따라 10~15초)에
+// 쉽게 걸린다. 타임아웃은 클라이언트에서 "던져진 예외"로 나타나 화면 전체를 error.tsx 로
+// 바꿔버렸던 원인 중 하나라, 여유를 준다(예외 자체는 NexonKeyCard 에서도 흡수한다).
+export const maxDuration = 60;
+
 // 이 프로젝트에는 아직 생성된 Supabase Database 타입이 없어(@supabase/ssr 클라이언트가
 // 제네릭 스키마로 동작) 쿼리 결과가 그대로 any 로 온다. 행 구조를 명시하기 위한 최소 인터페이스.
 interface UserSecretRow {

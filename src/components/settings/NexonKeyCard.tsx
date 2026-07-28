@@ -6,10 +6,31 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { deleteNexonKey, saveNexonKey, type NexonKeyState } from "@/app/main/nexon-key-actions";
+import { runVoidAction } from "@/lib/safe-action";
 
 // "use server" 파일은 async 함수만 export 가능(Next.js 제약)이라, 초기 상태값은
 // 이 클라이언트 컴포넌트에 둔다.
 const initialNexonKeyState: NexonKeyState = { error: null, success: false };
+
+/**
+ * saveNexonKey 는 계정의 모든 캐릭터를 순차 워밍업하므로 캐릭터가 많으면 서버리스 함수
+ * 실행시간 제한에 걸릴 수 있다. useActionState 에 넘긴 액션이 **예외를 던지면 React 가 그걸
+ * 렌더 중에 다시 던져 error boundary(=main/error.tsx)로 올려버리기 때문에**, 설정 모달 안에서
+ * 키 등록에 실패했을 뿐인데 화면 전체가 에러 페이지로 바뀌었다. 여기서 흡수해 폼 안의 에러
+ * 문구로만 보여준다.
+ */
+async function saveNexonKeySafe(prevState: NexonKeyState, formData: FormData): Promise<NexonKeyState> {
+  try {
+    return await saveNexonKey(prevState, formData);
+  } catch (error) {
+    console.error(error);
+    return {
+      error:
+        "키 등록 처리가 완료되지 못했습니다. 캐릭터 수가 많으면 시간이 초과될 수 있어요 — 잠시 후 다시 시도하거나, 화면을 새로고침해 등록 여부를 확인해 주세요.",
+      success: false,
+    };
+  }
+}
 
 interface NexonKeyCardProps {
   /** 등록된 키가 있는지(서버에서 이미 조회한 값). 원문은 절대 이 컴포넌트에 넘기지 않는다. */
@@ -24,15 +45,19 @@ interface NexonKeyCardProps {
  * 으로만 전송하고, 화면에는 등록 여부 Badge 와 서버가 만들어준 마스킹 문자열만 노출한다.
  */
 export function NexonKeyCard({ registered, maskedKey, className }: NexonKeyCardProps) {
-  const [state, formAction, isSaving] = useActionState(saveNexonKey, initialNexonKeyState);
+  const [state, formAction, isSaving] = useActionState(saveNexonKeySafe, initialNexonKeyState);
   const [isDeleting, startDeleteTransition] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   function handleDelete() {
     setDeleteError(null);
     startDeleteTransition(async () => {
-      const result = await deleteNexonKey();
-      if (result.error) setDeleteError(result.error);
+      // 호출 자체가 실패해도(타임아웃/네트워크) 예외가 error boundary 로 새어나가지 않게 한다.
+      const thrown = await runVoidAction(async () => {
+        const result = await deleteNexonKey();
+        if (result.error) setDeleteError(result.error);
+      }, "키 삭제 중 오류가 발생했습니다.");
+      if (thrown) setDeleteError(thrown);
     });
   }
 
