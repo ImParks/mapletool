@@ -16,6 +16,30 @@ function redirectToLogin(request: NextRequest) {
   return NextResponse.redirect(loginUrl);
 }
 
+/** 인증 코드가 콜백이 아닌 곳에 떨어졌을 때 구제할 경로. */
+const AUTH_CODE_FALLBACK_PATHS = new Set(["/", "/login"]);
+
+/**
+ * 메일 링크가 `/auth/callback` 이 아닌 곳으로 떨어진 경우를 구제한다.
+ *
+ * Supabase 는 redirectTo 가 Redirect URL 허용목록에 없으면 **에러 없이 Site URL 로 폴백**한다.
+ * 그러면 사용자는 `<Site URL>/?code=...` 에 도착하고, 그 화면(랜딩/로그인)은 코드를 처리할 줄
+ * 몰라 아무 일도 일어나지 않는다 — "링크를 눌렀는데 그냥 로그인 화면이 뜬다"는 증상.
+ * 설정이 어긋나 있거나 예전에 발송된 링크가 남아 있어도 재설정이 되도록 여기서 콜백으로 넘긴다.
+ */
+function rescueMisroutedAuthCode(request: NextRequest) {
+  const { pathname, searchParams } = request.nextUrl;
+  if (!AUTH_CODE_FALLBACK_PATHS.has(pathname)) return null;
+  if (!searchParams.has("code") && !searchParams.has("token_hash")) return null;
+
+  const callbackUrl = request.nextUrl.clone();
+  callbackUrl.pathname = "/auth/callback";
+  if (!callbackUrl.searchParams.has("next")) {
+    callbackUrl.searchParams.set("next", "/reset-password");
+  }
+  return NextResponse.redirect(callbackUrl);
+}
+
 /**
  * 모든 요청에서 Supabase 세션 쿠키를 갱신한다.
  *
@@ -40,6 +64,9 @@ export async function updateSession(request: NextRequest) {
 }
 
 async function updateSessionUnsafe(request: NextRequest) {
+  const rescued = rescueMisroutedAuthCode(request);
+  if (rescued) return rescued;
+
   let response = NextResponse.next({ request });
 
   // 값이 없거나 형태가 깨져 있으면(개행/따옴표 혼입 등) createServerClient 가 URL 파싱에서
