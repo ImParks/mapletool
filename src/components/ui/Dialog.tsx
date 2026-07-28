@@ -5,11 +5,10 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
- * 현재 열려 있는 Dialog 들의 스택. 에러 모달처럼 모달 위에 모달이 겹칠 수 있으므로, ESC 는
- * **가장 위에 있는 하나만** 닫아야 한다(전부 각자 window 리스너를 달면 ESC 한 번에 아래 모달까지
- * 함께 닫혀, 사용자에겐 설정 화면이 통째로 사라진 것처럼 보인다).
+ * 현재 열려 있는 다이얼로그 스택(열린 순서). ESC 는 맨 위 다이얼로그 하나만 닫아야 하므로
+ * (예: 설정 모달 위에 에러 모달이 떴을 때 둘 다 닫히면 안 된다) 모듈 스코프에서 공유한다.
  */
-const openDialogStack: symbol[] = [];
+const OPEN_DIALOG_STACK: string[] = [];
 
 interface DialogProps {
   open: boolean;
@@ -20,8 +19,8 @@ interface DialogProps {
   /** 다이얼로그 카드 최대 폭 클래스. 기본 440px(설정/확인 다이얼로그 기준). */
   widthClassName?: string;
   /**
-   * 겹침 순서 클래스. 기본 z-[400](일반 모달). 에러 모달처럼 "이미 열린 모달 위에" 떠야 하는
-   * 경우에만 더 높은 값을 넘긴다(ErrorDialog 참고).
+   * 겹침 순서 클래스. 기본 z-[400](일반 모달). 에러/안내 모달처럼 "이미 열린 모달 위에" 떠야
+   * 하는 경우에만 더 높은 값을 넘긴다(AlertDialog 참고).
    */
   zIndexClassName?: string;
 }
@@ -42,26 +41,33 @@ export function Dialog({
 }: DialogProps) {
   const titleId = useId();
   const descriptionId = useId();
-  const instanceId = useRef<symbol>(Symbol("dialog"));
+  const instanceId = useId();
+
+  // onClose 는 호출부에서 인라인 화살표로 넘어오는 일이 많아 렌더마다 아이덴티티가 바뀐다.
+  // 그때마다 아래 effect 가 재실행되면 스택 순서가 뒤엉키므로 ref 로 최신 값만 들고 있는다.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
-    const id = instanceId.current;
-    openDialogStack.push(id);
+    OPEN_DIALOG_STACK.push(instanceId);
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      // 최상단 모달만 반응한다.
-      if (openDialogStack[openDialogStack.length - 1] !== id) return;
-      onClose();
+      // 위에 다른 다이얼로그가 얹혀 있으면 그쪽이 먼저 닫힌다.
+      if (OPEN_DIALOG_STACK[OPEN_DIALOG_STACK.length - 1] !== instanceId) return;
+      onCloseRef.current();
     }
+
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      const index = openDialogStack.lastIndexOf(id);
-      if (index !== -1) openDialogStack.splice(index, 1);
+      const index = OPEN_DIALOG_STACK.lastIndexOf(instanceId);
+      if (index !== -1) OPEN_DIALOG_STACK.splice(index, 1);
     };
-  }, [open, onClose]);
+  }, [open, instanceId]);
 
   if (!open) return null;
 

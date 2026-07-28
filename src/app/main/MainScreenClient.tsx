@@ -7,10 +7,10 @@ import Image from "next/image";
 import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon, Shield } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
-import { ErrorDialog } from "@/components/ui/ErrorDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
 import { Switch } from "@/components/ui/Switch";
+import { useAppDialog } from "@/components/AppDialogProvider";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
 import { ChecklistSection } from "@/components/checklist/ChecklistSection";
 import { ChecklistRow } from "@/components/checklist/ChecklistRow";
@@ -112,6 +112,8 @@ export function MainScreenClient({
 }: MainScreenClientProps) {
   const router = useRouter();
   const [, startRefresh] = useTransition();
+  // 에러/안내는 전부 모달로 띄운다 — 인라인 배너로 알리면 본문이 밀려 화면 구성이 달라 보인다.
+  const { showError, showNotice } = useAppDialog();
 
   // "동기화" 버튼으로 갱신한 필드의 낙관적 override. characters(서버 prop) 자체는 건드리지 않고
   // charactersView 파생 배열에서만 병합해 화면에 반영한다.
@@ -144,7 +146,6 @@ export function MainScreenClient({
   });
   const [pendingKeys, setPendingKeys] = useState<Record<string, boolean>>({});
   const [durations, setDurations] = useState<Record<string, number>>(initialDurations);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // 캐릭터별 "실제로 잡는" 주간 보스 선택(낙관적). null = 전체 선택(행 없음).
   const [bossSelectionMap, setBossSelectionMap] = useState<Record<string, string[] | null>>(() => {
@@ -189,10 +190,10 @@ export function MainScreenClient({
   const [hoverOcid, setHoverOcid] = useState<string | null>(null);
   const [popup, setPopup] = useState<{ top: number; left: number } | null>(null);
 
-  // 캐릭터 1개 스코프 동기화 버튼(#상세 패널 헤더)의 캐릭터별 독립 pending 상태 + 결과 안내.
+  // 캐릭터 1개 스코프 동기화 버튼(#상세 패널 헤더)의 캐릭터별 독립 pending 상태.
+  // 결과 안내(성공/실패)는 상태로 들고 있지 않고 전역 알림 모달(showNotice/showError)로 띄운다.
   const [snapshotPendingOcids, setSnapshotPendingOcids] = useState<Record<string, boolean>>({});
   const [schedulePendingOcids, setSchedulePendingOcids] = useState<Record<string, boolean>>({});
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   // 캐릭터 슬라이드 "grab to scroll"(마우스 드래그로 가로 스크롤). 터치/펜은 네이티브 스크롤을 그대로 쓴다.
   const sliderRef = useRef<HTMLDivElement | null>(null);
@@ -270,7 +271,7 @@ export function MainScreenClient({
       .then((result) => {
         if ("error" in result) {
           setDoneMap((m) => ({ ...m, [key]: prev }));
-          setErrorMessage(result.error);
+          showError(result.error);
         }
       })
       .finally(() => {
@@ -296,7 +297,7 @@ export function MainScreenClient({
     runAction(() => saveDuration(itemId, minutes), "소요시간 저장 중 오류가 발생했습니다.").then((result) => {
       if ("error" in result) {
         setDurations((d) => ({ ...d, [itemId]: prev }));
-        setErrorMessage(result.error);
+        showError(result.error);
       }
     });
   }
@@ -331,7 +332,7 @@ export function MainScreenClient({
         if ("error" in result) {
           setBossSelectionMap((m) => ({ ...m, [ocid]: previousSelection }));
           setDoneMap((m) => ({ ...m, ...removedDoneSnapshot }));
-          setErrorMessage(result.error);
+          showError(result.error);
         }
       }
     );
@@ -344,7 +345,7 @@ export function MainScreenClient({
     startResetTransition(async () => {
       const result = await runAction(() => resetAllCompletions(), "완료 기록 초기화 중 오류가 발생했습니다.");
       if ("error" in result) {
-        setErrorMessage(result.error);
+        showError(result.error);
         return;
       }
       setDoneMap({});
@@ -357,7 +358,7 @@ export function MainScreenClient({
     startSignOutTransition(async () => {
       // 성공 시 signOutAction 이 redirect("/login") 하므로 이 아래로는 오지 않는다.
       const error = await runVoidAction(() => signOutAction(), "로그아웃 중 오류가 발생했습니다.");
-      if (error) setErrorMessage(error);
+      if (error) showError(error);
     });
   }
 
@@ -365,7 +366,7 @@ export function MainScreenClient({
     startDeleteAccountTransition(async () => {
       const result = await runAction(() => deleteAccountAction(), "회원탈퇴 처리 중 오류가 발생했습니다.");
       if ("error" in result) {
-        setErrorMessage(result.error);
+        showError(result.error);
       }
     });
   }
@@ -389,7 +390,7 @@ export function MainScreenClient({
     setIsSyncing(true);
     runAction(() => refreshCharacterList(), "캐릭터 목록을 갱신하지 못했습니다.")
       .then((result) => {
-        if ("error" in result) setErrorMessage(result.error);
+        if ("error" in result) showError(result.error);
       })
       .finally(() => {
         setIsSyncing(false);
@@ -402,12 +403,11 @@ export function MainScreenClient({
   function handleSyncSnapshot(ocid: string) {
     if (snapshotPendingOcids[ocid]) return; // 연타 방지
     setSnapshotPendingOcids((p) => ({ ...p, [ocid]: true }));
-    setErrorMessage(null);
 
     runAction(() => refreshCharacterSnapshot(ocid), "캐릭터 정보를 불러오지 못했습니다.")
       .then((result) => {
         if ("error" in result) {
-          setErrorMessage(result.error);
+          showError(result.error);
           return;
         }
         setCharacterOverrides((m) => ({
@@ -421,7 +421,7 @@ export function MainScreenClient({
             authenticForce: result.authenticForce,
           },
         }));
-        setSyncNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
+        showNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
       })
       .finally(() => {
         setSnapshotPendingOcids((p) => {
@@ -441,12 +441,11 @@ export function MainScreenClient({
   function handleSyncSchedule(ocid: string) {
     if (schedulePendingOcids[ocid]) return; // 연타 방지
     setSchedulePendingOcids((p) => ({ ...p, [ocid]: true }));
-    setErrorMessage(null);
 
     runAction(() => syncSchedulerState(ocid), "숙제 동기화 중 오류가 발생했습니다.")
       .then((result) => {
         if ("error" in result) {
-          setErrorMessage(result.error);
+          showError(result.error);
           return;
         }
 
@@ -469,7 +468,7 @@ export function MainScreenClient({
         if (result.conflictItemIds.length > 0) {
           parts.push("게임에서는 아직 미완료로 표시돼요");
         }
-        setSyncNotice(parts.join(" · "));
+        showNotice(parts.join("\n"), { title: "숙제 동기화 결과" });
 
         if (result.discoveredItemIds.length > 0) {
           startRefresh(() => router.refresh());
@@ -790,23 +789,6 @@ export function MainScreenClient({
                     </div>
                   </div>
 
-                  {syncNotice && (
-                    <div
-                      role="status"
-                      className="flex items-center justify-between gap-3 rounded-xl bg-maple-success-soft px-3.5 py-2.5 text-xs font-semibold text-maple-success-text"
-                    >
-                      {syncNotice}
-                      <button
-                        type="button"
-                        onClick={() => setSyncNotice(null)}
-                        aria-label="닫기"
-                        className="font-extrabold"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  )}
-
                   {progressFor(selectedChar).categories.map((cat) => {
                     const visibleItems = hideDone
                       ? cat.items.filter((item) => !doneMap[`${selectedChar.ocid}::${item.id}`])
@@ -1083,9 +1065,6 @@ export function MainScreenClient({
         onClose={() => setBossEditOcid(null)}
         onSave={handleSaveBossSelection}
       />
-
-      {/* 다른 모든 모달(z-400) 위에 뜨는 공통 에러 모달. */}
-      <ErrorDialog message={errorMessage} onClose={() => setErrorMessage(null)} />
     </div>
   );
 }
