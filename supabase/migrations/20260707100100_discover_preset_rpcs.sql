@@ -34,10 +34,16 @@ create unique index if not exists idx_boss_presets_nexon_match
   on public.boss_presets (nexon_content_name, nexon_difficulty);
 
 -- ----------------------------------------------------------------------------
--- discover_boss_preset(p_name, p_nexon_content_name, p_nexon_difficulty) returns text
+-- discover_boss_preset(p_name, p_reset_type, p_nexon_content_name, p_nexon_difficulty) returns text
+--
+-- 2026-07-29 정정: 원래 3인자였고 본문에 reset_type='weekly_thu' 를 리터럴로 박아 넣었다.
+-- 실측 결과 넥슨 cycle 은 3종(bossDaily/bossWeekly/bossMonthly)이라 일일·월간 보스까지
+-- 전부 주간으로 등록되고 있었다. 이 파일을 재적용해도 그 버그가 되살아나지 않도록 여기서도
+-- 4인자 버전으로 고친다(운영 DB 의 구 3인자 함수 제거와 데이터 정정은 20260729100000 담당).
 -- ----------------------------------------------------------------------------
 create or replace function public.discover_boss_preset(
   p_name               text,
+  p_reset_type         text,
   p_nexon_content_name text,
   p_nexon_difficulty   text
 )
@@ -55,6 +61,10 @@ begin
   end if;
   if p_name is null or p_name = '' then
     raise exception 'discover_boss_preset(): name 은 비어 있을 수 없습니다.';
+  end if;
+  -- 보스에 weekly_mon(월요일 초기화)은 존재하지 않는다 — 넥슨 cycle 3종 대응값만 받는다.
+  if p_reset_type not in ('daily', 'weekly_thu', 'monthly') then
+    raise exception 'discover_boss_preset(): reset_type 은 daily/weekly_thu/monthly 여야 합니다 (받은 값: %)', p_reset_type;
   end if;
   if p_nexon_content_name is null or p_nexon_content_name = '' then
     raise exception 'discover_boss_preset(): nexon_content_name 은 비어 있을 수 없습니다.';
@@ -84,7 +94,7 @@ begin
     nexon_content_name, nexon_difficulty, list_order, created_by
   )
   values (
-    p_name, 'weekly_thu', 0, null, 0, 0,
+    p_name, p_reset_type, 0, null, 0, 0,
     p_nexon_content_name, p_nexon_difficulty, v_next_order, (select auth.uid())
   )
   on conflict (nexon_content_name, nexon_difficulty) do nothing
@@ -106,14 +116,14 @@ begin
 end;
 $$;
 
-comment on function public.discover_boss_preset(text, text, text) is
-  '넥슨 스케줄러 응답에서 발견된 미등록 보스를 find-or-create 로 등록. (nexon_content_name, nexon_difficulty) 정확 일치 조합이 이미 있으면 그 id 반환, 없으면 req_level=0/req_force=0/rec_hexa=0/symbol_type=null/reset_type=weekly_thu 로 신규 삽입(관리자가 나중에 수정) 후 id 반환. SECURITY DEFINER — 일반 사용자의 boss_presets 직접 insert/update 를 막는 RLS 를 우회해 이 좁은 로직만 실행한다.';
+comment on function public.discover_boss_preset(text, text, text, text) is
+  '넥슨 스케줄러 응답에서 발견된 미등록 보스를 find-or-create 로 등록. (nexon_content_name, nexon_difficulty) 정확 일치 조합이 이미 있으면 그 id 반환, 없으면 호출자가 넘긴 reset_type(넥슨 cycle 에서 파생) + req_level=0/req_force=0/rec_hexa=0/symbol_type=null 로 신규 삽입(관리자가 나중에 수정) 후 id 반환. SECURITY DEFINER — 일반 사용자의 boss_presets 직접 insert/update 를 막는 RLS 를 우회해 이 좁은 로직만 실행한다.';
 
 -- create or replace function 은 기존 권한을 유지하지만, 신규 생성 시 PostgreSQL 기본 동작상
 -- PUBLIC 에 EXECUTE 가 자동 부여될 수 있으므로 매번 명시적으로 정리한다(멱등).
-revoke all on function public.discover_boss_preset(text, text, text) from public;
-revoke all on function public.discover_boss_preset(text, text, text) from anon;
-grant execute on function public.discover_boss_preset(text, text, text) to authenticated;
+revoke all on function public.discover_boss_preset(text, text, text, text) from public;
+revoke all on function public.discover_boss_preset(text, text, text, text) from anon;
+grant execute on function public.discover_boss_preset(text, text, text, text) to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- discover_quest_preset(p_name, p_category, p_reset_type, p_nexon_content_name) returns text

@@ -29,17 +29,28 @@ alter table public.boss_presets
   add column if not exists nexon_difficulty  text;
 
 comment on column public.boss_presets.nexon_content_name is '넥슨 스케줄러 API 원문 콘텐츠명(예: 스우, 루시드). 표시용 name 과 분리 — name 은 관리자가 자유롭게 바꿔 매칭 키로 부적합하기 때문. null 이면 자동 동기화 대상에서 제외(수동 체크만 가능).';
-comment on column public.boss_presets.nexon_difficulty is '넥슨 스케줄러 API 원문 난이도(예: 하드). nexon_content_name 과 둘 다 있어야 자동 매칭 대상(오매칭 방지). null 이면 수동 체크로 유지.';
+comment on column public.boss_presets.nexon_difficulty is '넥슨 스케줄러 API 원문 난이도. 영문 소문자(easy/normal/hard/chaos/extreme) — 한글이 아니다. nexon_content_name 과 둘 다 있어야 자동 매칭 대상(오매칭 방지). null 이면 수동 체크로 유지.';
 
 -- ----------------------------------------------------------------------------
 -- 2) b5 개명: "하드 스우 / 듄켈" → "하드 스우" (id 는 그대로 유지 → 기존 완료기록/
 --    보스선택/견적시간 보존). 넥슨 매칭 필드도 채운다.
 -- ----------------------------------------------------------------------------
+-- 2026-07-29 정정: nexon_difficulty 를 한글 '하드' → 영문 'hard' 로 바꿨다. 넥슨 원문이
+-- 영문 소문자(easy/normal/hard/chaos/extreme)임을 실제 API 호출로 확인했고, 한글로는
+-- findBossMatch 가 영영 매칭하지 못했다. 이 파일을 재적용해도 버그가 되살아나지 않도록
+-- 여기 리터럴도 함께 고친다(실제 운영 DB 정정은 20260729100000 이 담당).
+-- not exists 가드: 이 파일이 이미 적용된 DB 에 자동발견 행 ('스우','hard') 가 생긴 상태에서
+-- 재적용하면 유니크 인덱스(idx_boss_presets_nexon_match) 위반으로 터진다. 그 중복 병합은
+-- 20260729100000 이 담당하므로, 여기서는 충돌이 있으면 조용히 건너뛴다.
 update public.boss_presets
 set name = '하드 스우',
     nexon_content_name = '스우',
-    nexon_difficulty = '하드'
-where id = 'b5';
+    nexon_difficulty = 'hard'
+where id = 'b5'
+  and not exists (
+    select 1 from public.boss_presets x
+    where x.nexon_content_name = '스우' and x.nexon_difficulty = 'hard' and x.id <> 'b5'
+  );
 
 -- ----------------------------------------------------------------------------
 -- 3) 기존 b6("선택 아케인")을 한 칸 뒤로 밀고(list_order 7), "하드 듄켈"을 b5 바로
@@ -49,12 +60,18 @@ where id = 'b5';
 -- ----------------------------------------------------------------------------
 update public.boss_presets set list_order = 7 where id = 'b6';
 
+-- `on conflict (id)` 는 id 중복만 막는다. ('듄켈','hard') 자동발견 행이 이미 있으면 유니크
+-- 인덱스(nexon_content_name, nexon_difficulty) 쪽에서 터지므로 where not exists 로 함께 막는다
+-- (b5 update 와 같은 이유 — 병합은 20260729100000 담당).
 insert into public.boss_presets
   (id, name,          reset_type,   req_level, rec_hexa, symbol_type, req_force, list_order,
    nexon_content_name, nexon_difficulty)
-values
-  ('b7', '하드 듄켈', 'weekly_thu', 230,       18,       'arcane',    1800,      6,
-   '듄켈', '하드')
+select
+   'b7', '하드 듄켈', 'weekly_thu', 230,       18,       'arcane',    1800,      6,
+   '듄켈', 'hard'  -- 2026-07-29 정정: '하드' → 'hard' (위 b5 주석 참고)
+where not exists (
+  select 1 from public.boss_presets x where x.nexon_content_name = '듄켈' and x.nexon_difficulty = 'hard'
+)
 on conflict (id) do nothing;
 
 -- ----------------------------------------------------------------------------
