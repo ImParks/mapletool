@@ -41,7 +41,12 @@ export interface BossPresetFields {
   recHexa: number;
   /** 넥슨 스케줄러 API 원문 콘텐츠명(예: "스우"). 매칭 키 — 값이 없으면 자동 동기화 대상에서 제외. */
   nexonContentName: string | null;
-  /** 넥슨 스케줄러 API 원문 난이도(예: "하드"). nexonContentName 과 둘 다 있어야 자동 매칭(오매칭 방지). */
+  /**
+   * 넥슨 스케줄러 API 원문 난이도. **영문 소문자**(easy/normal/hard/chaos/extreme).
+   * nexonContentName 과 둘 다 있어야 자동 매칭(오매칭 방지).
+   * 한글('하드')을 넣으면 findBossMatch 가 영영 매칭하지 못한다 — 실제로 그런 마이그레이션이
+   * 배포돼 자동 동기화가 통째로 죽은 적이 있어, 화면 입력을 select 로 제한했다.
+   */
   nexonDifficulty: string | null;
 }
 
@@ -50,6 +55,15 @@ function normalizeNullableText(value: string | null | undefined): string | null 
   if (value == null) return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * 난이도 전용 정규화. 넥슨 원문이 영문 소문자라 대소문자 표기 흔들림("Hard")을 여기서 흡수한다.
+ * (findBossMatch 의 normalizeName 도 소문자화하므로 매칭 자체는 되지만, DB 에 표기가 섞이면
+ * 관리자 화면의 select 가 값을 못 골라 빈 칸으로 보인다.)
+ */
+function normalizeDifficulty(value: string | null | undefined): string | null {
+  return normalizeNullableText(value)?.toLowerCase() ?? null;
 }
 
 /**
@@ -70,7 +84,7 @@ export async function updateBossPreset(id: string, fields: BossPresetFields): Pr
       req_force: clampInt(fields.reqForce, 0, 99999),
       rec_hexa: clampInt(fields.recHexa, 0, 30),
       nexon_content_name: normalizeNullableText(fields.nexonContentName),
-      nexon_difficulty: normalizeNullableText(fields.nexonDifficulty),
+      nexon_difficulty: normalizeDifficulty(fields.nexonDifficulty),
     })
     .eq("id", id);
 
@@ -117,7 +131,7 @@ export async function addBossPreset(fields: NewBossPresetFields): Promise<Action
       req_force: clampInt(fields.reqForce, 0, 99999),
       rec_hexa: clampInt(fields.recHexa, 0, 30),
       nexon_content_name: normalizeNullableText(fields.nexonContentName),
-      nexon_difficulty: normalizeNullableText(fields.nexonDifficulty),
+      nexon_difficulty: normalizeDifficulty(fields.nexonDifficulty),
       list_order: nextOrder,
       created_by: auth.userId,
     })

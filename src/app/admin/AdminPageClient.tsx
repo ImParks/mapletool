@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/Input";
 import { Logo } from "@/components/ui/Logo";
 import { cn } from "@/lib/cn";
 import { clampInt } from "@/lib/num";
+import { NEXON_BOSS_DIFFICULTIES } from "@/lib/scheduler-state";
 import { runAction } from "@/lib/safe-action";
 import { addBossPreset, updateBossPreset, type BossPresetFields } from "./boss-preset-actions";
 
@@ -34,7 +35,7 @@ export interface AdminBossPresetDTO {
   recHexa: number | null;
   /** 넥슨 스케줄러 API 원문 콘텐츠명(예: "스우"). 자동 동기화 매칭 키 — 없으면 수동 체크만 가능. */
   nexonContentName: string | null;
-  /** 넥슨 스케줄러 API 원문 난이도(예: "하드"). nexonContentName 과 둘 다 있어야 자동 매칭. */
+  /** 넥슨 스케줄러 API 원문 난이도(영문 소문자 — "hard" 등). nexonContentName 과 둘 다 있어야 자동 매칭. */
   nexonDifficulty: string | null;
 }
 
@@ -262,14 +263,21 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
         </label>
         <label className="flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5">
           <span className="text-[10.5px] font-bold text-maple-text-muted">넥슨 난이도</span>
-          <input
-            type="text"
+          {/* 자유 입력이 아니라 선택지로 제한한다 — 예전 자유 입력 + "예: 하드" 플레이스홀더
+              때문에 DB 에 한글 난이도가 들어가 자동 매칭이 전부 실패했다. */}
+          <select
             value={draft.nexonDifficulty ?? ""}
             onChange={(event) => setDraft((d) => ({ ...d, nexonDifficulty: event.target.value }))}
-            placeholder="예: 하드"
             aria-label={`${preset.name} 넥슨 스케줄러 난이도`}
-            className="w-16 border-none bg-transparent text-xs font-extrabold text-maple-text-primary outline-none"
-          />
+            className="border-none bg-transparent text-xs font-extrabold text-maple-text-primary outline-none"
+          >
+            <option value="">(매칭 안 함)</option>
+            {NEXON_BOSS_DIFFICULTIES.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
     </div>
@@ -490,12 +498,22 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
               value={form.nexonContentName}
               onChange={(event) => setForm((f) => ({ ...f, nexonContentName: event.target.value }))}
             />
-            <Input
-              label="넥슨 난이도"
-              placeholder="예: 하드"
-              value={form.nexonDifficulty}
-              onChange={(event) => setForm((f) => ({ ...f, nexonDifficulty: event.target.value }))}
-            />
+            {/* 위 행 편집과 동일하게 선택지로 제한한다(한글 난이도 유입 차단). */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-extrabold text-maple-text-secondary">넥슨 난이도</span>
+              <select
+                value={form.nexonDifficulty}
+                onChange={(event) => setForm((f) => ({ ...f, nexonDifficulty: event.target.value }))}
+                className="h-11 rounded-xl border border-maple-line bg-maple-surface-inset px-3 text-sm font-bold text-maple-text-primary outline-none focus:border-maple-orange"
+              >
+                <option value="">(매칭 안 함)</option>
+                {NEXON_BOSS_DIFFICULTIES.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           {addError && (
             <p role="alert" className="text-xs font-semibold text-maple-danger">
