@@ -4,7 +4,23 @@
 // item_id(text)는 이 코드 id(d1..d5, w1..w3) 또는 boss_presets.id(b1..)와 매칭된다.
 import type { ResetType } from "./period";
 
-export type ChecklistCategory = "daily" | "weekly" | "boss";
+/**
+ * UI 표시 그룹. **초기화 주기(ResetType)와 다른 개념이다** — 완료 판정은 언제나 reset_type 으로
+ * 하고 category 는 화면 그룹핑/정렬에만 쓴다.
+ *
+ * boss 가 boss_daily 와 둘로 갈린 이유: 넥슨 스케줄러에 일일 보스(cycle="bossDaily", 자쿰
+ * easy/normal·매그너스 normal·힐라·카웅·반 레온·혼테일·아카이럼·핑크빈·시그너스 등 24행)가
+ * 실재하는데, 이들을 기존 보스 섹션에 섞으면 진행바 하나가 일일+주간+월간을 합산한 무의미한
+ * 비율이 되고 "일괄 완료" 한 번에 초기화 시점이 다른 세 주기가 전부 완료 처리된다.
+ * 월간 보스(검은 마법사)는 현재 2행뿐이라 별도 섹션 없이 boss 에 둔다 — 행마다 표시되는
+ * RESET_LABEL 이 "매월 1일 00시 초기화" 로 구분해 준다.
+ */
+export type ChecklistCategory = "daily" | "weekly" | "boss_daily" | "boss";
+
+/** 보스 계열 카테고리인지(캐릭터별 보스 선택 필터가 적용되는 그룹). */
+export function isBossCategory(category: ChecklistCategory): boolean {
+  return category === "boss" || category === "boss_daily";
+}
 
 export interface PresetItem {
   /** 안정적 항목 식별자. completions/quest_durations 등의 item_id(text)와 매칭. */
@@ -41,7 +57,9 @@ export const PRESET_ITEMS: PresetItem[] = [
 export const CATEGORY_LABEL: Record<ChecklistCategory, string> = {
   daily: "일일 컨텐츠",
   weekly: "주간 퀘스트",
-  boss: "주간 보스",
+  boss_daily: "일일 보스",
+  // 월간 보스(검은 마법사)도 이 그룹에 들어가므로 "주간 보스" 라고만 쓰면 라벨이 사실과 다르다.
+  boss: "주간·월간 보스",
 };
 
-export const CATEGORY_ORDER: ChecklistCategory[] = ["daily", "weekly", "boss"];
+export const CATEGORY_ORDER: ChecklistCategory[] = ["daily", "weekly", "boss_daily", "boss"];

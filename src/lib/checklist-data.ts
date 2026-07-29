@@ -4,7 +4,7 @@
 // 원본 데이터(항목 목록/캐릭터별 완료·보스선택/소요시간)를 서버 컴포넌트가 직렬화 가능한
 // props 로 내려주면, 클라이언트는 동일한 파생 계산(관련 항목/진행률/남은 시간)을 자체적으로
 // 다시 수행한다(디자인 프로토타입의 renderVals() 와 동일한 패턴 — 매 렌더 파생 계산).
-import { PRESET_ITEMS, CATEGORY_ORDER, type ChecklistCategory, type PresetItem } from "./presets";
+import { PRESET_ITEMS, CATEGORY_ORDER, isBossCategory, type ChecklistCategory, type PresetItem } from "./presets";
 import type { ResetType } from "./period";
 
 export interface BossPreset {
@@ -37,10 +37,13 @@ export interface ChecklistItem {
 
 /** daily/weekly 코드 프리셋 + quest_presets(DB) + boss_presets(DB) 를 CATEGORY_ORDER 순으로 합친 전체 항목 목록 */
 export function buildAllItems(bossPresets: BossPreset[], questPresets: QuestPreset[]): ChecklistItem[] {
+  // 보스의 표시 그룹은 초기화 주기에서 파생한다 — 일일 보스(reset_type="daily")만 별도 섹션으로
+  // 빼고 주간/월간은 한 섹션에 둔다. 새 컬럼을 만들지 않는 이유: 주기는 넥슨 cycle 에서 이미
+  // 결정되므로 category 를 따로 저장하면 두 값이 어긋날 여지만 생긴다.
   const bossItems: ChecklistItem[] = bossPresets.map((b) => ({
     id: b.id,
     name: b.name,
-    category: "boss",
+    category: b.reset_type === "daily" ? "boss_daily" : "boss",
     reset_type: b.reset_type,
   }));
   const questItems: ChecklistItem[] = questPresets.map((q) => ({
@@ -52,7 +55,8 @@ export function buildAllItems(bossPresets: BossPreset[], questPresets: QuestPres
   const byCategory: Record<ChecklistCategory, ChecklistItem[]> = {
     daily: [...PRESET_ITEMS.filter((i) => i.category === "daily"), ...questItems.filter((q) => q.category === "daily")],
     weekly: [...PRESET_ITEMS.filter((i) => i.category === "weekly"), ...questItems.filter((q) => q.category === "weekly")],
-    boss: bossItems,
+    boss_daily: bossItems.filter((i) => i.category === "boss_daily"),
+    boss: bossItems.filter((i) => i.category === "boss"),
   };
   return CATEGORY_ORDER.flatMap((cat) => byCategory[cat]);
 }
@@ -64,9 +68,10 @@ export function findPresetItem(itemId: string): PresetItem | undefined {
 
 /**
  * 캐릭터에게 "관련 있는" 항목만 필터링한다.
- * daily/weekly 는 항상 포함, boss 는 bossSelection 이 null(그 캐릭터에 선택 행이 하나도
- * 없음 = 전체 선택으로 간주)이거나 해당 item.id 를 포함할 때만 포함한다.
+ * daily/weekly 는 항상 포함, 보스 계열(boss/boss_daily)은 bossSelection 이 null(그 캐릭터에
+ * 선택 행이 하나도 없음 = 전체 선택으로 간주)이거나 해당 item.id 를 포함할 때만 포함한다.
+ * 일일 보스도 캐릭터마다 잡는 보스가 다르므로 같은 선택 필터를 적용한다.
  */
 export function relevantItems(allItems: ChecklistItem[], bossSelection: Set<string> | null): ChecklistItem[] {
-  return allItems.filter((i) => i.category !== "boss" || bossSelection === null || bossSelection.has(i.id));
+  return allItems.filter((i) => !isBossCategory(i.category) || bossSelection === null || bossSelection.has(i.id));
 }
