@@ -49,10 +49,10 @@ https://open.api.nexon.com
 **조회 흐름:** 캐릭터명 → `getOcid` 로 `ocid` 획득 → `ocid` 로 basic/stat 등 상세 조회.
 계정 전체 캐릭터는 `character/list` 한 번으로 가져온다.
 
-### date 파라미터 (주의 — 사용자 문서로 확정 필요)
-- 형식은 KST 기준 `YYYY-MM-DD` 로 추정. 넥슨 데이터는 보통 **전일 자정 기준 스냅샷**으로 갱신되어, 당일 데이터는 일정 시각 이후에 조회 가능한 경우가 많다.
-- 미지정 시 최신 가용 데이터.
-- ⚠️ 정확한 갱신 시각·조회 가능 범위·과거 데이터 보존 기간은 **공식 문서 붙여넣기로 확정**한다.
+### date 파라미터
+- 형식은 KST 기준 `YYYY-MM-DD`. 미지정 시 최신 가용 데이터.
+- `character/basic` 등은 2023-12-21 데이터부터 조회 가능.
+- ⚠️ **`/scheduler/character-state` 는 규칙이 완전히 다르다** — 오늘 날짜를 명시하면 400 이고 조회 범위가 최근 13일뿐이다. 아래 스케줄러 섹션 참조. 다른 엔드포인트와 같은 방식으로 "KST 오늘 날짜를 계산해 넣는" 코드를 쓰면 그 엔드포인트만 100% 실패한다.
 
 ---
 
@@ -95,16 +95,46 @@ https://open.api.nexon.com
 
 | 메서드/경로 | 파라미터 | 비고 |
 |---|---|---|
-| `GET /maplestory/v1/scheduler/character-state` | `ocid`, `date?`(YYYY-MM-DD, 미입력 시 오늘) | ⚠️ **자신의 계정에 속한 캐릭터만 조회 가능** (basic/stat과 다른 인증 범위). 해당 기준일에 접속 이력이 없으면 응답이 없을 수 있음 |
+| `GET /maplestory/v1/scheduler/character-state` | `ocid`, `date?` | ⚠️ **자신의 계정에 속한 캐릭터만 조회 가능** (basic/stat과 다른 인증 범위). ⚠️ **`date` 규칙이 다른 엔드포인트와 다르다 — 아래 참조** |
+
+> 아래는 2026-07-29 에 **실제로 호출해 확인한 값**이다(캐릭터 12명 표본 + 보스 77행 전수). 추측이 아니다.
 
 **응답 (`CharacterStateResponse`):**
-- `date`, `character_name`, `world_name`, `character_level`, `character_class`
-- `daily_contents[]` — 일일 콘텐츠/퀘스트: `{ content_name, type("contents"|"quest"), registration_flag(인게임 스케줄러 등록 여부), now_count, max_count, quest_state("0":기타/"1":진행중/"2":완료) }`
-- `weekly_contents[]` — 주간 콘텐츠/퀘스트: `daily_contents`와 동일 구조
-- `boss_contents[]` — 주간보스: `{ content_name, difficulty, cycle(초기화 주기), list_order_no, registration_flag, complete_flag("true"/"false") }`
-- `weekly_boss_clear_count`, `weekly_boss_clear_limit_count` — 주간 보스 처치 완료/제한 횟수
+- `date` — ⚠️ `YYYY-MM-DD` 가 **아니라** ISO datetime 이다: `"2026-07-29T00:00+09:00"`
+- `character_name`, `world_name`, `character_level`, `character_class`
+- `daily_contents[]` / `weekly_contents[]` — 동일 구조: `{ content_name, type, registration_flag, now_count, max_count, quest_state }`
+- `boss_contents[]` — `{ content_name, difficulty, cycle, list_order_no, registration_flag, complete_flag }`
+- `weekly_boss_clear_count`, `weekly_boss_clear_limit_count` — 주간 보스 처치/제한(관측값 12). 인게임 스케줄러를 쓴 적 없는 캐릭터는 `0/0` 이고 `boss_contents` 가 빈 배열이다(날짜 무관 고정)
 
-**의미:** 이 엔드포인트를 쓰면 사용자가 앱에서 수동 체크하지 않아도, **게임 내 실제 완료 여부를 넥슨 서버에서 그대로 가져와** 일일/주간 퀘스트·주간보스 체크리스트를 자동 동기화할 수 있다. 단, 인게임 "스케줄러" 기능에 등록된 항목(`registration_flag`)만 잡히고, 조회 시점의 데이터가 실시간이 아니라 `date` 기준 스냅샷이라는 점은 유의.
+**`date` 파라미터 — 이 엔드포인트만 규칙이 다르다 (실측):**
+
+| 값 | 결과 |
+|---|---|
+| **미지정** | 200, **오늘 데이터**. 오늘을 조회하는 유일한 방법 |
+| 오늘 날짜 명시 | **400 `OPENAPI00004`** ← KST 오늘 날짜를 계산해 넣으면 100% 실패 |
+| 미래 | 400 |
+| 어제 ~ 13일 전 | 200 |
+| 14일 전 이상 과거 | 400 |
+
+**캐싱 예외:** 이 응답은 스냅샷이 아니라 **실시간**이다 — 방금 잡은 보스가 즉시 `complete_flag="true"` 로 반영되는 것을 확인했다. 그래서 `maple.ts` 의 `getCharacterState` 만 `revalidate: 0` 으로 호출한다(기본 60초를 쓰면 "보스 잡고 바로 동기화했는데 미완료로 뜬다"가 되고, 그 증상은 완료 판정 버그와 사용자 눈에 구별되지 않는다).
+
+**`difficulty` — 영문 소문자 5종:** `easy` / `normal` / `hard` / `chaos` / `extreme`
+> ⚠️ **한글이 아니다.** 과거에 `boss_presets.nexon_difficulty` 에 `'하드'` 를 넣은 마이그레이션이 배포돼 `findBossMatch` 가 단 한 건도 매칭하지 못한 채 자동 동기화가 죽어 있었다(`normalizeName` 은 공백제거+소문자화만 하므로 `'하드'` 와 `'hard'` 는 영원히 다르다). 같은 보스가 난이도별로 **별도 행**이다(스우 normal/hard/extreme = 3행).
+
+**`cycle` — 3종:** `bossDaily`(24행) / `bossWeekly`(51행) / `bossMonthly`(2행: 검은 마법사 hard·extreme)
+> ⚠️ **"주간 보스" 전용 엔드포인트가 아니다.** 그리고 **주기는 보스 이름이 아니라 (이름, 난이도) 쌍에 종속된다** — 자쿰 `easy`·`normal` 은 `bossDaily`, 자쿰 `chaos` 는 `bossWeekly` 다. 매그너스·파풀라투스·피에르·반반·블러디퀸·벨룸도 같은 식으로 갈린다. **이름만으로 주기를 역추정하면 틀린다.**
+> 앱에서의 대응 매핑은 `scheduler-state.ts` 의 `bossCycleToResetType()` — `bossDaily`→`daily`, `bossWeekly`→`weekly_thu`, `bossMonthly`→`monthly`.
+
+**`type` / `quest_state` / `now_count` / `max_count`:**
+- `type` 은 `"contents"` | `"quest"` 둘뿐. `type==="contents"` 면 `quest_state` 가 **`null`** 이다(빈 문자열 아님)
+- `quest_state` 는 `"0"`(기타) / `"1"`(진행중) / `"2"`(완료) 셋 다 실재
+- `type==="quest"` 도 `now/max` 를 가질 수 있다(예: `[일일 퀘스트] 세르니움 조사` = `now=0/max=100/state="1"`). 그래도 완료 판정은 `quest_state` 만 따른다
+- ⚠️ **`max_count === 0` 인 콘텐츠가 다수다**(에픽 던전 3종, 무릉도장, `[길드] 지하 수로`, `[길드] 플래그 레이스`). 그때 `now_count` 는 완료 횟수가 **아니다** — `[길드] 지하 수로` 가 `now=10144`(점수), `에픽 던전 : 악몽선경` 이 `now=5 > max=0` 이다. **`now>0` 을 완료로 해석하면 안 된다.** `scheduler-state.ts` 는 이 경우를 `"unknown"`(판정 불가)으로 처리한다
+- `registration_flag: "false"` 인 항목도 **전부 응답에 포함**된다(안 하는 주간퀘 12개, 일일퀘 18개 전체). "등록된 것만 온다"가 아니다
+
+**미접속 캐릭터 판별 (실측):** 그날 접속하지 않은 캐릭터는 `daily_contents` 에 몬스터파크 1개만 오고 `cycle="bossDaily"` 항목이 통째로 빠진다(접속한 날은 daily 18개 + bossDaily 24개). **응답이 완전히 비지는 않으므로 "빈 응답"으로는 판별할 수 없다** — `scheduler-state.ts` 의 `hasDailyData`(`boss.some(cycle==="bossDaily")`) / `hasBossData` 를 쓸 것.
+
+**의미:** 이 엔드포인트를 쓰면 사용자가 앱에서 수동 체크하지 않아도, **게임 내 실제 완료 여부를 넥슨 서버에서 그대로 가져와** 체크리스트를 자동 동기화할 수 있다. 단 위의 "판정 불가" 경우들을 미완료로 뭉개지 말 것 — 넥슨이 하지 않은 말을 사용자에게 통보하게 된다.
 
 ---
 

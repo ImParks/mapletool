@@ -12,14 +12,19 @@ mapletool은 일일/주간 퀘스트와 주간 보스의 완료 여부를 체크
 - **일일(daily)**: 매일 00:00 KST 초기화.
 - **주간 퀘스트(weekly_mon)**: 매주 **월요일** 00:00 KST 초기화. resetWeekday = 1.
 - **주간 보스(weekly_thu)**: 매주 **목요일** 00:00 KST 초기화. resetWeekday = 4.
+- **월간 보스(monthly)**: 매월 **1일** 00:00 KST 초기화. 현재 검은 마법사(넥슨 `cycle="bossMonthly"`)뿐.
+  넥슨 API 는 `cycle` 이 월간이라는 사실만 알려주고 초기화 시점은 알려주지 않으며, 스케줄러 API 의 `date` 조회 범위가 최근 13일뿐이라 월 경계를 관측해 확인할 수도 없다. 앵커는 인게임 확인으로 확정했다(2026-07-29).
 
 KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 UTC로 동작할 수 있으므로 시각 계산은 절대 `new Date()`의 로컬 필드(`getHours()`/`getDay()` 등)를 직접 쓰지 말고 항상 KST로 변환한다. `period.ts`는 `Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", ... })`로 변환하므로(`kstParts`), 서버 타임존과 무관하게 동일한 결과가 나온다.
 
-`ResetType = "daily" | "weekly_mon" | "weekly_thu"`. 사람이 읽는 라벨은 `RESET_LABEL` 맵(`Record<ResetType, string>`)을 쓴다. 실제 값:
+`ResetType = "daily" | "weekly_mon" | "weekly_thu" | "monthly"`. 사람이 읽는 라벨은 `RESET_LABEL` 맵(`Record<ResetType, string>`)을 쓴다. 실제 값:
 
 - `daily` → `"매일 00시 초기화"`
 - `weekly_mon` → `"월요일 00시 초기화"`
 - `weekly_thu` → `"목요일 00시 초기화"`
+- `monthly` → `"매월 1일 00시 초기화"`
+
+전체 목록이 필요하면 손으로 나열하지 말고 `ALL_RESET_TYPES`(period.ts) 를 쓴다.
 
 ## 완료 상태는 "주기 키(period key)" 기반
 
@@ -44,6 +49,9 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
   - `daily` → `` `d-${dayNum}` `` → `d-20627`
   - `weekly_mon` → `` `weekly_mon-${periodStart}` `` → 직전 월요일은 2026-06-22(dayNum 20626) → `weekly_mon-20626`
   - `weekly_thu` → `` `weekly_thu-${periodStart}` `` → 직전 목요일은 2026-06-18(dayNum 20622) → `weekly_thu-20622`
+  - `monthly` → `` `monthly-${year}-${MM}` `` (월은 2자리 zero-pad) → `monthly-2026-06`
+- 네 접두사(`d-` / `weekly_mon-` / `weekly_thu-` / `monthly-`)는 서로 배타적이다 — 접두사만으로 "그 주기의 키인가"를 판별할 수 있다(마이그레이션에서 낡은 행을 고를 때 유용).
+- **키 형식은 절대 바꾸지 말 것.** `completions.period_key` 에 그대로 저장돼 있고 그 컬럼엔 CHECK 도 length 제한도 없어서, 형식을 바꾸면 이미 쌓인 완료 기록이 조용히 전부 고아가 된다(DB 가 막아주지 않는다).
 - 주간 `periodStart` 계산: 현재 KST 요일에서 직전 초기화 요일까지 거슬러 올라간 일수만큼 `dayNum`을 뺀다.
   - `resetWeekday = resetType === "weekly_mon" ? 1 : 4`
   - `diff = (weekday - resetWeekday + 7) % 7`
@@ -55,19 +63,33 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
 
 `src/lib/presets.ts` 의 `PresetItem` 은 두 필드를 모두 갖는다.
 
-- **`category`** (`ChecklistCategory = "daily" | "weekly" | "boss"`): **UI 표시 그룹**. 화면에서 묶어 보여줄 섹션. `CATEGORY_LABEL`(일일 컨텐츠/주간 퀘스트/주간 보스), `CATEGORY_ORDER`(`["daily","weekly","boss"]`)로 라벨/정렬을 정한다.
+- **`category`** (`ChecklistCategory = "daily" | "weekly" | "boss_daily" | "boss"`): **UI 표시 그룹**. 화면에서 묶어 보여줄 섹션. `CATEGORY_LABEL`(일일 컨텐츠/주간 퀘스트/일일 보스/주간·월간 보스), `CATEGORY_ORDER`(`["daily","weekly","boss_daily","boss"]`)로 라벨/정렬을 정한다. 보스 계열인지 판별할 땐 `isBossCategory()` 를 쓴다(캐릭터별 보스 선택 필터가 걸리는 그룹).
 - **`reset_type`** (`ResetType`): **초기화 주기(완료 판정에 사용)**. `currentPeriodKey`에 넘기는 값.
 
-이 둘은 보통 연관되지만 항상 1:1은 아니다. 실제 프리셋에서도 `category: "weekly"` 항목은 `reset_type: "weekly_mon"`(월요일), `category: "boss"` 항목은 `reset_type: "weekly_thu"`(목요일)로 **서로 다른 의미**다. **완료 여부는 언제나 `reset_type`으로 계산하고, `category`는 화면 그룹핑/정렬에만 쓴다.** 절대 `category`로 주기 키를 만들지 말 것(`currentPeriodKey(item.category)`는 타입상 우연히 통과할 수 있는 `"daily"`/`"weekly"` 같은 값에서도 의미가 틀어진다 — 반드시 `item.reset_type`을 넘긴다).
+이 둘은 보통 연관되지만 항상 1:1은 아니다. 가장 명확한 예가 보스다: `category: "boss"` 한 그룹 안에 `reset_type: "weekly_thu"`(주간 보스)와 `reset_type: "monthly"`(검은 마법사)가 **함께** 들어 있고, 반대로 `category: "boss_daily"` 는 `reset_type: "daily"` 로 일일 컨텐츠와 같은 주기를 공유한다. `category: "weekly"` 항목의 주기도 `weekly_mon`(월요일)이라 이름과 다르다.
 
-## 새 초기화 주기 추가 절차 (예: 월간 monthly)
+보스의 `category` 는 `reset_type` 에서 파생한다(`checklist-data.ts` 의 `buildAllItems`: `reset_type === "daily" ? "boss_daily" : "boss"`). 별도 컬럼을 두지 않는 이유는 주기가 넥슨 `cycle` 에서 이미 결정되므로 두 값이 어긋날 여지만 생기기 때문이다. **완료 여부는 언제나 `reset_type`으로 계산하고, `category`는 화면 그룹핑/정렬에만 쓴다.** 절대 `category`로 주기 키를 만들지 말 것(`currentPeriodKey(item.category)`는 타입상 우연히 통과할 수 있는 `"daily"`/`"weekly"` 같은 값에서도 의미가 틀어진다 — 반드시 `item.reset_type`을 넘긴다).
 
-1. `src/lib/period.ts` 의 `ResetType` 유니온에 새 값 추가(예: `"monthly"`).
-2. `currentPeriodKey` 에 분기 추가. 월간이라면 KST 기준 "매월 1일 00:00" 시작을 묶는 키를 만든다(예: `` `monthly-${year}-${month}` `` — `kstParts(now)`의 `year`/`month` 사용). 일/주간과 동일하게 "같은 주기 = 같은 문자열" 불변식을 지킬 것.
-3. `RESET_LABEL` 에 사람이 읽는 라벨 추가. 타입이 `Record<ResetType, string>` 이라 누락하면 컴파일 에러로 안전망 역할을 한다(빌드 시 `next build`/`next lint`에서 잡힘).
-4. 필요하면 `src/lib/presets.ts` 에서 해당 `reset_type`을 쓰는 프리셋 항목 추가.
-5. 새 주기가 기존 표시 그룹과 안 맞으면 `ChecklistCategory`/`CATEGORY_LABEL`/`CATEGORY_ORDER` 도 함께 갱신.
-6. 저장 스키마 변경은 보통 불필요하다 — `period_key`는 문자열 컬럼이라 새 형식 키(`monthly-2026-6`)를 그대로 수용한다. 단 멱등 유니크 제약과 조회 쿼리 영향은 `supabase-architect` 와 확인.
+## 새 초기화 주기 추가 절차
+
+> 아래 순서는 2026-07-29 에 `monthly` 를 실제로 추가하며 검증한 것이다. 특히 6~8번은 그때 빠뜨리면 **데이터가 조용히 손상되는** 지점이라 생략 금지.
+
+1. `src/lib/period.ts` 의 `ResetType` 유니온에 새 값 추가.
+2. **`ALL_RESET_TYPES` 배열에도 추가**. 여기 빠지면 `currentPeriodKeys()` 가 그 주기를 안 돌려주고, 그 주기의 완료가 화면에서 통째로 사라진다(유니온과 배열의 일치를 타입이 강제하지 못하므로 눈으로 챙길 것).
+3. `currentPeriodKey` 의 `switch` 에 분기 추가. `default` 의 `never` 체크가 안전망이라 분기를 빼면 컴파일 에러가 난다.
+   > 예전에는 `if (daily) ... else 주간` 구조여서 값만 추가하고 분기를 빼먹으면 **컴파일이 통과하고** 조용히 목요일 키(`monthly-20657`)가 나왔다. 그래서 `switch`+`never` 로 바꿨다.
+4. `RESET_LABEL` 에 라벨 추가. `Record<ResetType, string>` 이라 누락하면 컴파일 에러.
+5. 필요하면 `src/lib/presets.ts` 에서 해당 `reset_type`을 쓰는 프리셋 항목 추가. 새 주기가 기존 표시 그룹과 안 맞으면 `ChecklistCategory`/`CATEGORY_LABEL`/`CATEGORY_ORDER` 도 함께 갱신(`category` 와 `reset_type` 은 별개 개념임에 주의 — 아래 섹션).
+6. **DB 마이그레이션이 필요하다.** `period_key` 자체는 제약 없는 `text` 라 어떤 형식이든 수용하지만, 값을 열거하는 곳이 네 군데 있다:
+   - `boss_presets.reset_type` CHECK (`20260702090000_init_schema.sql`)
+   - `quest_presets.reset_type` CHECK (`20260707100000_...`)
+   - `discover_boss_preset()` 의 plpgsql 화이트리스트
+   - `discover_quest_preset()` 의 plpgsql 화이트리스트
+   CHECK 와 RPC 화이트리스트는 **반드시 같은 마이그레이션에서** 고친다 — 하나만 고치면 RPC 가 예외를 던지거나 CHECK 가 거부해 조용히 실패한다.
+7. **`.in("period_key", [...])` 로 여러 주기를 조회하는 지점을 전부 `currentPeriodKeys()` 로 바꾼다.** 주기를 손으로 나열하면 새 주기가 추가될 때 누락된다. 누락의 결과가 단순 표시 버그가 아니라는 점이 중요하다 — 화면에 미완료로 보이는 항목을 사용자가 체크하면 `toggleCompletion` 이 "이미 있는 행"을 찾아 **DELETE** 하고 `done:false` 를 반환하는데, 클라이언트는 에러가 아니면 롤백하지 않아 화면엔 체크된 채 남고 DB 에선 완료가 사라진다.
+8. **단일 `reset_type` 을 하드코딩해 `completions` 를 DELETE 하는 지점**도 함께 고친다(예: `boss-selection-actions.ts` 의 보스 선택 해제). 안 고치면 다른 주기 항목의 완료가 안 지워져 유령 완료로 남는다.
+9. **배포 순서: 앱 코드 먼저, 마이그레이션 나중.** DB→TS 경계가 무검증 캐스팅인 곳이 있어, DB 에 새 값이 먼저 생기면 구 코드가 그 값으로 엉뚱한 키를 만든다. 되돌리기 어려운 쓰기 경로에서는 캐스팅 대신 `asResetType()` 으로 좁힐 것.
+10. 테스트가 없는 프로젝트이므로, `period.ts` 를 `npx tsc` 로 단독 컴파일해 실행하고 **기존 키 형식이 그대로인지**(회귀) + 새 주기의 경계 시각을 눈으로 확인한다. 기존 키 형식이 바뀌면 이미 쌓인 완료 기록이 전부 고아가 된다.
 
 ## 엣지 케이스 / 주의
 
