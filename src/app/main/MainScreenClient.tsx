@@ -393,6 +393,30 @@ export function MainScreenClient({
   }
 
   /**
+   * 스냅샷(이미지/전투력/포스)이 없는 캐릭터를 선택하면 그 자리에서 한 번 불러온다.
+   *
+   * character_cache 행은 캐릭터 목록 대조(reconcileCharacterCache) 단계에서 이름/레벨 같은
+   * 가벼운 필드만으로 먼저 만들어지고, 이미지·전투력은 캐릭터별 워밍업이 나중에 채운다.
+   * 그래서 워밍업이 돌지 못한 캐릭터는 행은 있는데 이미지가 비어 있는 상태로 남는다. 그런
+   * 행은 "이미 캐시에 있는 캐릭터"라 상단바 "캐릭터 동기화"의 신규 목록(newOcids)에도 안 잡혀서,
+   * 예전에는 캐릭터를 하나씩 골라 "동기화" 버튼을 직접 누르는 것 말고는 복구 방법이 없었다.
+   *
+   * ocid 당 한 번만 시도한다(ref 로 기록). 실패하거나 넥슨이 정말로 이미지를 안 주는
+   * 캐릭터를 고를 때마다 넥슨을 다시 때리지 않도록.
+   */
+  const autoSnapshotTriedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!selectedChar) return;
+    // 이미지와 전투력이 **둘 다** 비어 있을 때만 "한 번도 안 불러온" 것으로 본다.
+    if (selectedChar.imageUrl !== null || selectedChar.combatPower !== null) return;
+    if (autoSnapshotTriedRef.current.has(selectedChar.ocid)) return;
+    autoSnapshotTriedRef.current.add(selectedChar.ocid);
+    handleSyncSnapshot(selectedChar.ocid, { silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleSyncSnapshot 은 매 렌더 새로 만들어진다(의존성에 넣으면 매번 재실행)
+  }, [selectedChar]);
+
+  /**
    * 상단바 "캐릭터 동기화". 계정 캐릭터 목록을 우리 캐시와 대조해(이름/레벨 갱신, 사라진 캐릭터
    * 삭제) 새로 생긴 캐릭터만 돌려받은 뒤, 그 캐릭터들의 상세를 1건씩 순차로 불러온다.
    */
@@ -422,8 +446,13 @@ export function MainScreenClient({
       });
   }
 
-  /** "동기화" 버튼(캐릭터 1개 스코프, 스탯/이미지). 성공 시 charactersView 에만 낙관적으로 반영한다. */
-  function handleSyncSnapshot(ocid: string) {
+  /**
+   * "동기화" 버튼(캐릭터 1개 스코프, 스탯/이미지). 성공 시 charactersView 에만 낙관적으로 반영한다.
+   * silent 는 아래 자동 보충(선택 시 스냅샷 없으면 불러오기)에서 쓴다 — 사용자가 누른 게 아닌데
+   * 성공 모달을 띄우면 캐릭터를 넘길 때마다 알림이 튀어나온다. 실패 모달은 남긴다(같은 캐릭터당
+   * 한 번만 시도하므로 반복되지 않고, 조용히 실패하면 이미지가 왜 안 나오는지 알 수 없다).
+   */
+  function handleSyncSnapshot(ocid: string, options?: { silent?: boolean }) {
     if (snapshotPendingOcids[ocid]) return; // 연타 방지
     setSnapshotPendingOcids((p) => ({ ...p, [ocid]: true }));
 
@@ -444,7 +473,7 @@ export function MainScreenClient({
             authenticForce: result.authenticForce,
           },
         }));
-        showNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
+        if (!options?.silent) showNotice("캐릭터 정보를 최신 상태로 불러왔어요.");
       })
       .finally(() => {
         setSnapshotPendingOcids((p) => {
@@ -722,6 +751,11 @@ export function MainScreenClient({
                       <div
                         key={char.ocid}
                         data-ocid={char.ocid}
+                        // 카드 **전체**가 선택 영역이다. 예전에는 아래 이름/진행률 버튼에만 onClick 이
+                        // 걸려 있어서, 카드 면적의 절반이 넘는 이미지 영역을 눌러도 아무 일이 없었다
+                        // (대부분의 사용자가 그림을 누른다). 안쪽 버튼은 클릭이 여기로 버블링되므로
+                        // 자체 onClick 없이 키보드 포커스 대상 역할만 한다 — 핸들러가 두 번 불리지 않는다.
+                        onClick={() => handleSelectCharacter(char.ocid)}
                         onMouseEnter={(event) => {
                           if (sliderDragRef.current.dragging) return;
                           handleHoverEnter(char.ocid, event.currentTarget.getBoundingClientRect());
@@ -762,7 +796,7 @@ export function MainScreenClient({
                         </div>
                         <button
                           type="button"
-                          onClick={() => handleSelectCharacter(char.ocid)}
+                          aria-label={`${char.name} 선택`}
                           className="flex w-full flex-col gap-2.5 border-t border-maple-line-subtle p-3.5 text-left"
                         >
                           <div className="min-w-0">
