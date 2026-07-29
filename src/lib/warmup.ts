@@ -4,11 +4,15 @@
 // 서버 액션/서버 컴포넌트에서만 import 한다("use client" 파일에서 import 금지 — maple.ts 가
 // 서버 전용이라 번들링 시 오류가 난다).
 //
-// 이 파일의 함수 3개는 다음 3곳에서 재사용된다:
-//  - src/app/main/actions.ts 의 refreshCharacterSnapshot("동기화" 버튼) → syncCharacterSnapshot
+// 이 파일의 함수 2개는 다음 두 서버 액션에서 재사용된다:
+//  - src/app/main/actions.ts 의 refreshCharacterSnapshot → syncCharacterSnapshot
+//    (캐릭터 상세의 "동기화" 버튼 + 키 등록/캐릭터 동기화 직후의 클라이언트 순차 워밍업)
 //  - src/app/main/actions.ts 의 syncSchedulerState("숙제 동기화" 버튼) → syncCharacterSchedule
-//  - src/app/main/nexon-key-actions.ts 의 saveNexonKey/refreshCharacterList(초기 워밍업) → warmUpCharacter
-//    (스냅샷+숙제 동기화를 순서대로 실행하는 조합 함수)
+//
+// 스냅샷과 숙제를 한 번에 도는 조합 함수(warmUpCharacter)는 없앴다 — 최초 연결 워밍업은
+// 스냅샷만 부르고(숙제는 사용자가 필요할 때 "숙제 동기화"로), 그 순차 진행은 클라이언트가
+// 맡는다(src/lib/character-warmup.ts). 캐릭터당 넥슨 호출이 4회에서 3회로 줄고, 서버 액션
+// 하나가 계정 전체를 도느라 실행시간 제한에 걸리던 문제도 사라졌다.
 import type { createClient } from "@/lib/supabase/server";
 import {
   getCharacterBasic,
@@ -436,21 +440,5 @@ export async function syncCharacterSchedule(
     hasBossData: state.hasBossData,
     hasDailyData: state.hasDailyData,
   };
-}
-
-/**
- * 캐릭터 1건에 대해 스냅샷 동기화 + 스케줄러 동기화를 순서대로 수행한다. 최초 넥슨 키 등록
- * 워밍업(saveNexonKey)과 상단바 "캐릭터 동기화"의 신규 캐릭터 워밍업(refreshCharacterList)에서
- * 캐릭터별로 순차 호출된다 — 여기서는 딜레이를 넣지 않는다(호출부가 캐릭터 사이 딜레이를 둔다).
- * 두 단계 중 하나가 실패하면 예외를 그대로 던져 호출부(순차 루프)가 캐릭터 단위로 catch 하게 한다.
- */
-export async function warmUpCharacter(
-  supabase: SupabaseServerClient,
-  apiKey: string,
-  userId: string,
-  ocid: string
-): Promise<void> {
-  await syncCharacterSnapshot(supabase, apiKey, userId, ocid);
-  await syncCharacterSchedule(supabase, apiKey, userId, ocid);
 }
 

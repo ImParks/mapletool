@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
+import { ProgressOverlay } from "@/components/ui/ProgressOverlay";
 import { Switch } from "@/components/ui/Switch";
 import { useAppDialog } from "@/components/AppDialogProvider";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
@@ -22,9 +23,10 @@ import {
   CATEGORY_SOFT_CLASS,
   CATEGORY_TEXT_CLASS,
 } from "@/components/checklist/category-styles";
-import { CATEGORY_LABEL, CATEGORY_ORDER, type ChecklistCategory } from "@/lib/presets";
+import { CATEGORY_LABEL, CATEGORY_ORDER, isBossCategory, type ChecklistCategory } from "@/lib/presets";
 import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
+import { useCharacterWarmup } from "@/lib/character-warmup";
 import { runAction, runVoidAction } from "@/lib/safe-action";
 import { refreshCharacterSnapshot, saveDuration, syncSchedulerState, toggleCompletion } from "./actions";
 import { saveBossSelection } from "./boss-selection-actions";
@@ -112,6 +114,9 @@ export function MainScreenClient({
 }: MainScreenClientProps) {
   const router = useRouter();
   const [, startRefresh] = useTransition();
+  // 신규 캐릭터 순차 워밍업(진행률 오버레이). progress 는 아래 hoverProgress 등과 헷갈리지
+  // 않도록 warmupProgress 로 받는다.
+  const { progress: warmupProgress, warmUp, endWarmup } = useCharacterWarmup();
   // 에러/안내는 전부 모달로 띄운다 — 인라인 배너로 알리면 본문이 밀려 화면 구성이 달라 보인다.
   const { showError, showNotice } = useAppDialog();
 
@@ -209,7 +214,9 @@ export function MainScreenClient({
   function relevantItemsFor(char: CharacterDTO): ChecklistItemDTO[] {
     const selection = bossSelectionFor(char);
     const bossSet = selection === null ? null : new Set(selection);
-    return items.filter((i) => i.category !== "boss" || bossSet === null || bossSet.has(i.id));
+    // 보스 계열(주간·월간 + 일일)은 모두 캐릭터별 선택 필터를 탄다. checklist-data.ts 의
+    // relevantItems 와 동일한 규칙 — 서버/클라이언트가 같은 파생 계산을 각자 수행한다.
+    return items.filter((i) => !isBossCategory(i.category) || bossSet === null || bossSet.has(i.id));
   }
 
   function isCharComplete(char: CharacterDTO): boolean {
@@ -385,17 +392,33 @@ export function MainScreenClient({
     setPopup(null);
   }
 
+  /**
+   * 상단바 "캐릭터 동기화". 계정 캐릭터 목록을 우리 캐시와 대조해(이름/레벨 갱신, 사라진 캐릭터
+   * 삭제) 새로 생긴 캐릭터만 돌려받은 뒤, 그 캐릭터들의 상세를 1건씩 순차로 불러온다.
+   */
   function handleSync() {
     if (isSyncing) return; // 연타 방지
     setIsSyncing(true);
     runAction(() => refreshCharacterList(), "캐릭터 목록을 갱신하지 못했습니다.")
-      .then((result) => {
-        if ("error" in result) showError(result.error);
+      .then(async (result) => {
+        if ("error" in result) {
+          showError(result.error);
+          return;
+        }
+        if (result.newOcids.length === 0) return;
+        const failed = await warmUp(result.newOcids);
+        if (failed > 0) {
+          showError(
+            `새로 추가된 캐릭터 ${failed}명의 정보를 불러오지 못했어요. 해당 캐릭터를 선택한 뒤 "동기화" 버튼으로 다시 시도해 주세요.`
+          );
+        }
       })
       .finally(() => {
         setIsSyncing(false);
         // 캐릭터 목록/character_cache 가 갱신됐으니 서버 컴포넌트가 최신 값을 다시 내려주게 한다.
+        // 오버레이는 refresh 가 끝날 때까지 유지된다(open 조건에 isRefreshing 포함).
         startRefresh(() => router.refresh());
+        endWarmup();
       });
   }
 
@@ -449,6 +472,9 @@ export function MainScreenClient({
           return;
         }
 
+        // syncedItemIds/discoveredItemIds 는 둘 다 "서버가 방금 완료로 기록한" 항목이다.
+        // newPresetItemIds 는 완료 여부와 무관한 "새로 생긴 프리셋"이라 여기 넣으면 안 된다
+        // (판정 불가 항목까지 체크된 것처럼 표시된다).
         const newlyDoneIds = [...result.syncedItemIds, ...result.discoveredItemIds];
         if (newlyDoneIds.length > 0) {
           setDoneMap((m) => {
@@ -458,9 +484,22 @@ export function MainScreenClient({
           });
         }
 
-        const parts = [`${result.syncedItemIds.length}개 항목을 게임 데이터로 확인했어요`];
-        if (result.discoveredItemIds.length > 0) {
-          parts.push(`${result.discoveredItemIds.length}개 새 항목을 발견해 추가했어요`);
+        // 첫 줄은 "이번에 새로 기록한 수"가 아니라 "완료로 확인된 총 수"다 — 예전에는
+        // syncedItemIds 만 셌더니 두 번째 동기화부터 항상 "0개 확인했어요" 가 떴다.
+        const confirmedCount = result.syncedItemIds.length + result.alreadyDoneItemIds.length;
+        const parts = [`${confirmedCount}개 항목이 완료로 확인됐어요`];
+        if (result.newPresetItemIds.length > 0) {
+          parts.push(`${result.newPresetItemIds.length}개 새 항목을 발견해 추가했어요`);
+        }
+        if (!result.hasBossData) {
+          parts.push("이 캐릭터는 게임에 보스 기록이 없어 보스 항목은 확인할 수 없어요");
+        } else if (!result.hasDailyData) {
+          parts.push("오늘 접속 기록이 없어 일일 항목은 확인할 수 없어요");
+        }
+        if (result.undeterminedItemIds.length > 0) {
+          // 넥슨이 "미완료"라고 한 게 아니라 판정 근거 자체를 안 주는 항목(무릉도장 등).
+          // conflict 와 반드시 다른 문구여야 한다.
+          parts.push(`${result.undeterminedItemIds.length}개는 게임 데이터로 완료 여부를 알 수 없어 체크를 그대로 뒀어요`);
         }
         if (result.unmatchedItemIds.length > 0) {
           parts.push("매칭 안 된 항목은 수동으로 체크해주세요");
@@ -470,7 +509,11 @@ export function MainScreenClient({
         }
         showNotice(parts.join("\n"), { title: "숙제 동기화 결과" });
 
-        if (result.discoveredItemIds.length > 0) {
+        // 새 프리셋이 생겼으면 클라이언트가 모르는 항목이 있으므로 목록을 다시 받아온다.
+        // 완료 기록 여부(discoveredItemIds)가 아니라 프리셋 생성 여부로 판단해야 한다 —
+        // 판정 불가로 생성만 된 항목은 discoveredItemIds 에 없어서 예전 조건으로는 화면에
+        // 영영 나타나지 않았다.
+        if (result.newPresetItemIds.length > 0) {
           startRefresh(() => router.refresh());
         }
       })
@@ -573,6 +616,17 @@ export function MainScreenClient({
 
   return (
     <div className="relative z-10">
+      {/* 신규 캐릭터를 순차로 불러오는 동안 화면 전체를 덮는다. 다 불러온 뒤 화면이 갱신된다.
+          (여기는 최초 연결과 달리 이미 캐릭터 목록이 떠 있는 화면이라, refresh 까지 오버레이를
+          붙들어 둘 필요는 없다 — NexonKeyCard 쪽만 isRefreshing 을 open 조건에 포함한다.) */}
+      <ProgressOverlay
+        open={warmupProgress !== null}
+        title="API 호출중입니다"
+        description="새로 추가된 캐릭터 정보를 불러오고 있어요."
+        done={warmupProgress?.done ?? 0}
+        total={warmupProgress?.total ?? 0}
+      />
+
       <div className="sticky top-0 z-[100] border-b border-maple-line-subtle bg-white/[.86] backdrop-blur-[10px]">
         <div className="mx-auto flex max-w-[1080px] items-center gap-2.5 px-5 py-[11px]">
           <button type="button" onClick={handleGoHome} aria-label="홈" className="flex items-center">
@@ -803,7 +857,10 @@ export function MainScreenClient({
                         totalLabel={formatMinutes(cat.totalMinutes)}
                         onBulkComplete={() => handleBulkComplete(selectedChar, cat.category)}
                         extraContent={
-                          cat.category === "boss" ? (
+                          // 보스 편집 다이얼로그는 일일/주간/월간 보스를 한 번에 다루므로 두
+                          // 보스 섹션 어디서든 열 수 있게 한다(일일 보스 섹션만 보고 있는 사용자가
+                          // 편집 진입점을 못 찾는 일이 없도록).
+                          isBossCategory(cat.category) ? (
                             <div className="px-1 pb-2.5">
                               <button
                                 type="button"
