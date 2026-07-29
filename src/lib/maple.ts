@@ -111,21 +111,41 @@ export interface SchedulerContent {
   type: string;
   /** 인게임 스케줄러 등록 여부 ("true" | "false") */
   registration_flag: string;
-  /** 현재 완료 횟수/점수 */
+  /**
+   * 현재 완료 횟수/점수. **max_count 가 0 이면 완료 횟수가 아니다** — `[길드] 지하 수로` 는
+   * now_count=10144(점수), `에픽 던전 : 악몽선경` 은 now=5 > max=0 으로 온다.
+   */
   now_count: number;
-  /** 최대 완료 가능 횟수/점수 */
+  /**
+   * 최대 완료 가능 횟수/점수. **0 이 흔하다**(에픽 던전 3종/무릉도장/[길드] 지하 수로/
+   * [길드] 플래그 레이스). 0 이면 now/max 로 완료를 판정할 수 없다 — scheduler-state.ts 가
+   * "unknown"(판정 불가)으로 처리한다.
+   */
   max_count: number;
-  /** 퀘스트 진행 상태 ("0":기타, "1":진행 중, "2":완료) */
-  quest_state: string;
+  /**
+   * 퀘스트 진행 상태 ("0":기타, "1":진행 중, "2":완료). 세 값 모두 실측 확인됨.
+   * **type==="contents" 면 이 필드가 null 로 온다**(빈 문자열이 아니다).
+   */
+  quest_state: string | null;
 }
 
 /** 스케줄러 보스 콘텐츠 항목 */
 export interface SchedulerBoss {
   /** 보스 명 */
   content_name: string;
-  /** 보스 난이도 */
+  /**
+   * 보스 난이도. **영문 소문자**: "easy" | "normal" | "hard" | "chaos" | "extreme"
+   * (한글 '하드'가 아니다 — 이 착각이 boss_presets.nexon_difficulty 에 한글을 넣어
+   * 자동 매칭을 통째로 무력화시킨 적이 있다).
+   * 같은 보스가 난이도별로 별도 행이다(스우 normal/hard/extreme = 3행).
+   */
   difficulty: string;
-  /** 보스 초기화 주기 */
+  /**
+   * 보스 초기화 주기: "bossDaily" | "bossWeekly" | "bossMonthly" (실측 확정).
+   * **주기는 이름이 아니라 (이름, 난이도) 쌍에 종속된다** — 자쿰 easy·normal 은 bossDaily,
+   * 자쿰 chaos 는 bossWeekly 다(매그너스/파풀라투스/피에르/반반/블러디퀸/벨룸도 동일).
+   * bossMonthly 는 현재 검은 마법사(hard/extreme)뿐이다.
+   */
   cycle: string;
   /** 리스트 순서 */
   list_order_no: number;
@@ -142,7 +162,10 @@ export interface SchedulerBoss {
  * normalizeCharacterState()가 방어적으로(빈 배열·0 기본값) 처리한다.
  */
 export interface CharacterStateResponse {
-  /** 조회 기준일 (YYYY-MM-DD). 미접속 등으로 응답이 비면 null일 수 있음 */
+  /**
+   * 조회 기준일. **YYYY-MM-DD 가 아니라 ISO datetime 이다** — 실측값 예:
+   * "2026-07-29T00:00+09:00". 날짜만 필요하면 앞 10자를 자를 것.
+   */
   date: string | null;
   character_name: string;
   world_name: string;
@@ -243,13 +266,30 @@ export function getCharacterStat(apiKey: string, ocid: string, date?: string) {
 /**
  * 캐릭터 스케줄러(일일/주간/보스) 수행 현황 조회.
  * 계정 귀속 API — API 키 소유 계정의 캐릭터만 조회 가능하며, 남의 ocid는 403을 반환한다.
- * 해당 기준일에 미접속이면 응답 결과가 비어 있을 수 있다(date 미지정 시 오늘).
+ *
+ * **date 를 넘기지 말 것(실측 확인).** 이 엔드포인트만 date 규칙이 다르다:
+ *  - date 미지정 → 200, **오늘 데이터**. 이게 유일한 "오늘" 조회 방법이다.
+ *  - date=오늘 날짜 → **400 (OPENAPI00004)**. 다른 엔드포인트처럼 KST 오늘 날짜를 계산해
+ *    넣으면 100% 실패한다.
+ *  - date=미래 → 400. date=어제 ~ 13일 전 → 200. 14일 전부터 다시 400.
+ * date 파라미터는 과거 조회(백필)용으로만 남겨둔다.
+ *
+ * **캐시 0초**: 이 응답은 스냅샷이 아니라 **실시간**이다(방금 잡은 보스가 즉시
+ * complete_flag="true" 로 반영되는 것을 확인했다). 기본값 60초를 쓰면 "보스 잡고 바로
+ * 동기화했는데 미완료로 뜬다"가 되고, 그 증상은 완료 판정 버그와 사용자 눈에 구별되지 않아
+ * 원인 추적이 매우 어려워진다. 대신 넥슨 레이트리밋(개발단계 초당 5건/일 1000건)을 그대로
+ * 받으므로, 호출은 캐릭터 1건 단위 "숙제 동기화" 에서만 일어나야 한다.
+ *
+ * 기준일에 미접속이면 일일 데이터(daily_contents 대부분 + cycle="bossDaily" 보스)가 통째로
+ * 빠진 채 응답이 온다. 응답이 완전히 비지는 않으므로 "빈 응답" 으로는 판별할 수 없다 —
+ * scheduler-state.ts 의 hasDailyData/hasBossData 를 쓸 것.
  */
 export function getCharacterState(apiKey: string, ocid: string, date?: string) {
   return request<CharacterStateResponse>(
     apiKey,
     "/maplestory/v1/scheduler/character-state",
-    { ocid, date }
+    { ocid, date },
+    0
   );
 }
 

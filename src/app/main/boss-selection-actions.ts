@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { currentPeriodKey } from "@/lib/period";
+import { currentPeriodKeys } from "@/lib/period";
 import type { ActionResult } from "@/lib/action-result";
 
 interface ItemIdRow {
@@ -67,13 +67,15 @@ export async function saveBossSelection(
   }
 
   if (removedIds.length > 0) {
-    const periodKey = currentPeriodKey("weekly_thu");
+    // 현재 주기 키 **전체**를 대상으로 지운다. 예전에는 weekly_thu 하나로만 지워서, 일일
+    // 보스(초기화 daily)나 월간 보스(검은 마법사)를 선택 해제하면 그 완료 기록이 남아
+    // 유령 완료가 됐다. 항목 하나는 주기가 하나뿐이라 여러 키를 넘겨도 많아야 한 행만 맞는다.
     await supabase
       .from("completions")
       .delete()
       .eq("user_id", user.id)
       .eq("character_ocid", characterOcid)
-      .eq("period_key", periodKey)
+      .in("period_key", currentPeriodKeys())
       .in("item_id", removedIds);
   }
 

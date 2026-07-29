@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { buildAllItems, type BossPreset, type QuestPreset } from "@/lib/checklist-data";
-import { currentPeriodKey } from "@/lib/period";
+import { asResetType, currentPeriodKey, currentPeriodKeys } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
 import { CenteredNotice } from "@/components/CenteredNotice";
 import { NexonKeyCard } from "@/components/settings/NexonKeyCard";
@@ -150,7 +150,11 @@ export default async function MainPage() {
       .from("completions")
       .select("character_ocid,item_id,period_key")
       .eq("user_id", user.id)
-      .in("period_key", [currentPeriodKey("daily"), currentPeriodKey("weekly_mon"), currentPeriodKey("weekly_thu")]),
+      // 주기를 손으로 나열하지 않는다 — 예전에는 3개를 하드코딩해서, 새 주기(monthly)가
+      // 추가되면 그 주기의 완료 기록이 화면에 아예 안 실렸다. 그 상태에서 사용자가 항목을
+      // 체크하면 toggleCompletion 이 "이미 있는 행"을 찾아 **삭제**하고 done:false 를 반환하는데,
+      // 클라이언트는 에러가 아니면 롤백하지 않으므로 화면엔 체크된 채 남고 DB 에선 완료가 사라진다.
+      .in("period_key", currentPeriodKeys()),
     supabase.from("quest_durations").select("item_id,minutes").eq("user_id", user.id),
     supabase.from("character_boss_selection").select("character_ocid,item_id").eq("user_id", user.id),
     // 앱바의 관리자(방패) 아이콘 노출 여부 판정용. 일반 유저에게는 아이콘 자체를 숨긴다
@@ -160,23 +164,32 @@ export default async function MainPage() {
   const isAdmin = profileRoleResult.data?.role === "admin";
 
   const bossPresetRows = (bossPresetsResult.data ?? []) as BossPresetRow[];
-  // reset_type/symbol_type 은 DB check 제약으로 값이 한정돼 있다(마이그레이션 참고).
-  const bossPresets: BossPreset[] = bossPresetRows.map((b) => ({
-    id: b.id,
-    name: b.name,
-    reset_type: b.reset_type as BossPreset["reset_type"],
-    req_level: b.req_level,
-    symbol_type: b.symbol_type as BossPreset["symbol_type"],
-    req_force: b.req_force,
-    rec_hexa: b.rec_hexa,
-  }));
+  // symbol_type 은 DB check 제약으로 값이 한정돼 있어 캐스팅으로 충분하지만, reset_type 은
+  // 캐스팅하지 않고 asResetType 으로 좁힌다 — 코드가 모르는 주기가 흘러들면 currentPeriodKey 가
+  // 엉뚱한 키를 만들어 완료 기록이 조용히 어긋난다(마이그레이션이 코드보다 먼저 배포된 경우 등).
+  // 모르는 값이면 그 항목을 아예 내리지 않는다: 화면에서 사라지는 편이 잘못된 키로 완료를
+  // 쓰는 것보다 낫다(사라진 항목은 코드 배포로 바로 복구되지만, 어긋난 완료 기록은 남는다).
+  const bossPresets: BossPreset[] = bossPresetRows.flatMap((b) => {
+    const resetType = asResetType(b.reset_type);
+    if (!resetType) return [];
+    return [
+      {
+        id: b.id,
+        name: b.name,
+        reset_type: resetType,
+        req_level: b.req_level,
+        symbol_type: b.symbol_type as BossPreset["symbol_type"],
+        req_force: b.req_force,
+        rec_hexa: b.rec_hexa,
+      },
+    ];
+  });
   const questPresetRows = (questPresetsResult.data ?? []) as QuestPresetRow[];
-  const questPresets: QuestPreset[] = questPresetRows.map((q) => ({
-    id: q.id,
-    name: q.name,
-    category: q.category as QuestPreset["category"],
-    reset_type: q.reset_type as QuestPreset["reset_type"],
-  }));
+  const questPresets: QuestPreset[] = questPresetRows.flatMap((q) => {
+    const resetType = asResetType(q.reset_type);
+    if (!resetType) return [];
+    return [{ id: q.id, name: q.name, category: q.category as QuestPreset["category"], reset_type: resetType }];
+  });
   const allItems = buildAllItems(bossPresets, questPresets);
   const items: ChecklistItemDTO[] = allItems.map((i) => ({
     id: i.id,
@@ -196,8 +209,18 @@ export default async function MainPage() {
     recHexa: b.rec_hexa,
   }));
 
+  // item_id → 그 항목이 지금 가져야 할 주기 키. 위 쿼리는 "현재 유효한 키 4종 중 하나"인 행을
+  // 전부 가져오므로, 항목별로 **자기 주기의 키인지** 한 번 더 걸러야 한다.
+  //
+  // 걸르지 않으면: 어떤 항목의 reset_type 이 재분류되면(예: 일일 보스가 weekly_thu → daily)
+  // 예전에 저장된 weekly_thu 키 행이 여전히 "현재 유효한 키"라 통과해 화면엔 완료로 보인다.
+  // 그런데 해제 클릭은 새 주기(daily) 키로 조회하므로 지울 행을 못 찾고 오히려 INSERT 한다
+  // → 완료 행이 하나 더 늘고 새로고침하면 되살아난다 = 영구 해제 불가.
+  const expectedPeriodKeyByItemId = new Map(allItems.map((i) => [i.id, currentPeriodKey(i.reset_type)]));
+
   const doneByOcid = new Map<string, Set<string>>();
   for (const row of (completionsResult.data ?? []) as CompletionRow[]) {
+    if (expectedPeriodKeyByItemId.get(row.item_id) !== row.period_key) continue;
     const set = doneByOcid.get(row.character_ocid) ?? new Set<string>();
     set.add(row.item_id);
     doneByOcid.set(row.character_ocid, set);

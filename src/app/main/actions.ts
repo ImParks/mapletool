@@ -2,12 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { currentPeriodKey, type ResetType } from "@/lib/period";
+import { asResetType, currentPeriodKey, type ResetType } from "@/lib/period";
 import { findPresetItem } from "@/lib/checklist-data";
 import type { ActionResult } from "@/lib/action-result";
 import { clampInt } from "@/lib/num";
 import { MapleApiError } from "@/lib/maple";
-import { syncCharacterSnapshot, syncCharacterSchedule } from "@/lib/warmup";
+import { syncCharacterSnapshot, syncCharacterSchedule, type SchedulerSyncResult } from "@/lib/warmup";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -20,12 +20,14 @@ async function resolveResetType(supabase: SupabaseServerClient, itemId: string):
   const preset = findPresetItem(itemId);
   if (preset) return preset.reset_type;
 
+  // reset_type 컬럼은 DB check 제약으로 값이 한정돼 있지만, 캐스팅 대신 asResetType 으로 좁힌다 —
+  // 여기서 나온 값이 곧 완료 기록의 period_key 가 되므로, 코드가 모르는 값을 그냥 통과시키면
+  // 되돌리기 어려운 잘못된 키로 기록된다. null 이면 호출부가 "존재하지 않는 항목"으로 거절한다.
   const { data: bossData } = await supabase.from("boss_presets").select("reset_type").eq("id", itemId).maybeSingle();
-  // reset_type 컬럼은 DB check 제약으로 ResetType 값만 허용된다.
-  if (bossData) return bossData.reset_type as ResetType;
+  if (bossData) return asResetType(bossData.reset_type);
 
   const { data: questData } = await supabase.from("quest_presets").select("reset_type").eq("id", itemId).maybeSingle();
-  if (questData) return questData.reset_type as ResetType;
+  if (questData) return asResetType(questData.reset_type);
 
   return null;
 }
@@ -160,19 +162,16 @@ export async function refreshCharacterSnapshot(
  * completions 에 반영하고, 우리 프리셋에 없는 신규 콘텐츠를 자동 등록한다. 핵심 로직은
  * src/lib/warmup.ts 의 syncCharacterSchedule — 이 액션은 로그인/키 조회만 담당한다.
  *
- * revalidatePath 를 호출하지 않는다 — discoveredItemIds(신규 등록된 프리셋)가 있으면 화면이
+ * revalidatePath 를 호출하지 않는다 — newPresetItemIds(신규 등록된 프리셋)가 있으면 화면이
  * 그 항목을 즉시 보여줘야 하므로, 클라이언트가 결과를 보고 필요 시 자체적으로 router.refresh()
  * 한다(낙관적 머지만으로는 "새로 생긴 항목"의 존재 자체를 클라이언트가 알 수 없기 때문).
+ *
+ * 반환 타입을 여기서 다시 나열하지 않고 SchedulerSyncResult 를 그대로 쓴다 — 예전에는 필드를
+ * 손으로 복제해 둬서 warmup 이 새 필드를 돌려줘도 액션 경계에서 조용히 잘려나갔다.
  */
-export async function syncSchedulerState(characterOcid: string): Promise<
-  ActionResult<{
-    syncedItemIds: string[];
-    alreadyDoneItemIds: string[];
-    discoveredItemIds: string[];
-    conflictItemIds: string[];
-    unmatchedItemIds: string[];
-  }>
-> {
+export async function syncSchedulerState(
+  characterOcid: string
+): Promise<ActionResult<SchedulerSyncResult>> {
   if (!characterOcid) return { error: "잘못된 요청입니다." };
 
   const supabase = await createClient();
