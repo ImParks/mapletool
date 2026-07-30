@@ -14,6 +14,37 @@ export class MapleApiError extends Error {
   }
 }
 
+/**
+ * 넥슨 오류 코드를 사용자에게 보여줄 한국어 문구로 옮긴다.
+ *
+ * 넥슨이 주는 message 를 그대로 노출하지 않는다 — 전부 영어라 사용자가 뜻을 알 수 없다.
+ * 실제로 호출량을 초과하면 "Please try again later" 라는 문구가 모달에 그대로 떴는데,
+ * 그것만 보고는 무엇을 어떻게 하라는 건지 알 수 없었다(원문 확인: OPENAPI00007 + 429).
+ *
+ * 코드 표는 넥슨 공식 문서 기준이며, 모르는 코드는 상태코드만 담은 일반 문구로 떨어진다.
+ */
+function errorMessageFor(code: string | undefined, status: number): string {
+  switch (code) {
+    case "OPENAPI00007":
+      return "넥슨 API 호출 한도를 초과했습니다. 잠시 후(약 1분) 다시 시도해 주세요.";
+    case "OPENAPI00005":
+      return "API 키가 유효하지 않습니다. 설정에서 키를 다시 등록해 주세요.";
+    case "OPENAPI00002":
+      return "이 캐릭터를 조회할 권한이 없습니다. 등록한 키의 계정에 속한 캐릭터인지 확인해 주세요.";
+    case "OPENAPI00003":
+      return "존재하지 않는 캐릭터입니다. 캐릭터 목록을 새로 동기화해 주세요.";
+    case "OPENAPI00011":
+      return "넥슨 API가 점검 중입니다. 점검이 끝난 뒤 다시 시도해 주세요.";
+    case "OPENAPI00001":
+      return "넥슨 서버에 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
+    default:
+      if (status === 401 || status === 403) {
+        return "API 키가 유효하지 않거나 권한이 없습니다. 설정에서 키를 확인해 주세요.";
+      }
+      return `넥슨 API 오류가 발생했습니다 (${status}). 잠시 후 다시 시도해 주세요.`;
+  }
+}
+
 async function request<T>(
   apiKey: string,
   path: string,
@@ -37,18 +68,13 @@ async function request<T>(
 
   if (!res.ok) {
     let code: string | undefined;
-    let message = `넥슨 API 오류 (${res.status})`;
     try {
       const body = await res.json();
       code = body?.error?.name;
-      if (body?.error?.message) message = body.error.message;
     } catch {
       // ignore parse error
     }
-    if (res.status === 401 || res.status === 403) {
-      message = "API 키가 유효하지 않거나 권한이 없습니다. 설정에서 키를 확인해 주세요.";
-    }
-    throw new MapleApiError(message, res.status, code);
+    throw new MapleApiError(errorMessageFor(code, res.status), res.status, code);
   }
 
   return res.json() as Promise<T>;

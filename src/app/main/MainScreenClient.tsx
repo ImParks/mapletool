@@ -84,6 +84,9 @@ interface MainScreenClientProps {
 const HIDE_DONE_KEY = "mapletool:hideDone";
 const AUTO_SORT_KEY = "mapletool:autoSort";
 
+/** 스냅샷 자동 보충을 시작하기 전 기다리는 시간. 캐릭터를 빠르게 훑을 때의 넥슨 호출 폭주를 막는다. */
+const AUTO_SNAPSHOT_DELAY_MS = 500;
+
 /** "동기화"(스탯) 성공 시 로컬에 낙관적으로 덮어쓰는 캐릭터 필드. characters prop 은 서버가 내려준
  * 값 그대로 유지하고(재조회 전까지 불변), 이 override 를 얹은 파생 배열(charactersView)만 화면에 쓴다. */
 interface CharacterOverride {
@@ -202,7 +205,15 @@ export function MainScreenClient({
 
   // 캐릭터 슬라이드 "grab to scroll"(마우스 드래그로 가로 스크롤). 터치/펜은 네이티브 스크롤을 그대로 쓴다.
   const sliderRef = useRef<HTMLDivElement | null>(null);
-  const sliderDragRef = useRef({ dragging: false, startX: 0, startScrollLeft: 0, moved: false });
+  // pointerId 는 "지금 캡처를 걸어둔 포인터" — null 이면 캡처 없음. 캡처는 드래그로 확정된
+  // 뒤에만 걸고(handleSliderPointerMove), 해제는 조건 없이 수행한다(handleSliderPointerEnd).
+  const sliderDragRef = useRef<{
+    dragging: boolean;
+    startX: number;
+    startScrollLeft: number;
+    moved: boolean;
+    pointerId: number | null;
+  }>({ dragging: false, startX: 0, startScrollLeft: 0, moved: false, pointerId: null });
   const [isSliderDragging, setIsSliderDragging] = useState(false);
 
   function bossSelectionFor(char: CharacterDTO): string[] | null {
@@ -410,9 +421,19 @@ export function MainScreenClient({
     if (!selectedChar) return;
     // 이미지와 전투력이 **둘 다** 비어 있을 때만 "한 번도 안 불러온" 것으로 본다.
     if (selectedChar.imageUrl !== null || selectedChar.combatPower !== null) return;
-    if (autoSnapshotTriedRef.current.has(selectedChar.ocid)) return;
-    autoSnapshotTriedRef.current.add(selectedChar.ocid);
-    handleSyncSnapshot(selectedChar.ocid, { silent: true });
+    const ocid = selectedChar.ocid;
+    if (autoSnapshotTriedRef.current.has(ocid)) return;
+
+    // 선택이 멎은 뒤에 부른다. 캐릭터를 빠르게 훑으면 스쳐 지나간 캐릭터까지 전부 호출하게
+    // 되는데, 넥슨 개발단계 키는 **초당 5건** 제한이고 캐릭터 1명 보충이 3건(basic/stat/
+    // symbol 병렬)이라 1초 안에 두 명만 눌러도 한도를 넘어 429(OPENAPI00007)가 난다.
+    // tried 기록도 타이머 안에서 한다 — 스쳐 지나간 캐릭터를 "시도함"으로 찍어버리면
+    // 나중에 그 캐릭터를 제대로 골랐을 때 영영 보충되지 않는다.
+    const timer = window.setTimeout(() => {
+      autoSnapshotTriedRef.current.add(ocid);
+      handleSyncSnapshot(ocid, { silent: true });
+    }, AUTO_SNAPSHOT_DELAY_MS);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleSyncSnapshot 은 매 렌더 새로 만들어진다(의존성에 넣으면 매번 재실행)
   }, [selectedChar]);
 
@@ -587,8 +608,24 @@ export function MainScreenClient({
     if (event.pointerType !== "mouse" || event.button !== 0) return;
     const el = sliderRef.current;
     if (!el) return;
-    sliderDragRef.current = { dragging: true, startX: event.clientX, startScrollLeft: el.scrollLeft, moved: false };
-    el.setPointerCapture(event.pointerId);
+    // ⚠️ 여기서 setPointerCapture 를 부르면 안 된다.
+    //
+    // 포인터 캡처가 걸린 상태에서는 호환 마우스 이벤트(mouseup)까지 캡처 대상(=슬라이더)으로
+    // 리타겟팅된다. 그러면 브라우저는 click 을 "mousedown 타깃과 mouseup 타깃의 공통 조상"
+    // 인 슬라이더에 발생시키고, 카드의 onClick 은 이벤트 경로에 아예 들어오지 않아 캐릭터
+    // 선택이 죽는다(클릭은 정상 전파되고 preventDefault 도 안 걸려 있어 원인 추적이 어렵다).
+    //
+    // 게다가 이 함수와 짝인 handleSliderPointerEnd 는 onPointerUp/Cancel/**Leave** 세 곳에
+    // 걸려 있어서, pointerleave 가 먼저 돌아 dragging 이 false 가 되면 뒤이은 pointerup 이
+    // early return 되며 캡처가 **영구히 남았다**. 그때부터 새로고침 전까지 모든 카드 클릭이
+    // 먹지 않았다. 캡처는 아래 pointermove 에서 "진짜 드래그"로 판명된 뒤에만 건다.
+    sliderDragRef.current = {
+      dragging: true,
+      startX: event.clientX,
+      startScrollLeft: el.scrollLeft,
+      moved: false,
+      pointerId: null,
+    };
     setIsSliderDragging(true);
     // 드래그 시작 즉시 호버 팝업을 닫는다(드래그 중 카드 위를 스쳐도 팝업이 깜빡이지 않도록).
     setHoverOcid(null);
@@ -602,19 +639,36 @@ export function MainScreenClient({
     const el = sliderRef.current;
     if (!el) return;
     const delta = event.clientX - drag.startX;
-    if (Math.abs(delta) > 6) drag.moved = true;
+    if (Math.abs(delta) > 6) {
+      drag.moved = true;
+      // 임계값을 넘긴 시점 = 클릭이 아니라 드래그로 확정된 시점. 이제서야 캡처를 건다.
+      // (이 클릭은 어차피 handleSliderClickCapture 가 moved 를 보고 무효화하므로,
+      //  캡처로 인한 리타겟팅이 선택을 망가뜨리지 않는다.)
+      if (drag.pointerId === null) {
+        el.setPointerCapture(event.pointerId);
+        drag.pointerId = event.pointerId;
+      }
+    }
     el.scrollLeft = drag.startScrollLeft - delta;
   }
 
   function handleSliderPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.pointerType !== "mouse") return;
     const drag = sliderDragRef.current;
+    const el = sliderRef.current;
+
+    // 캡처 해제는 dragging 여부와 **무관하게** 가장 먼저 한다. 이 함수는 pointerup/cancel/leave
+    // 세 경로로 들어오는데, 먼저 들어온 호출이 dragging 을 내려버리면 나중 호출이 early return
+    // 되어 캡처가 남는다 — 그 상태가 위에서 설명한 "카드 클릭이 통째로 죽는" 원인이었다.
+    if (drag.pointerId !== null) {
+      if (el?.hasPointerCapture(drag.pointerId)) el.releasePointerCapture(drag.pointerId);
+      drag.pointerId = null;
+    }
+
     if (!drag.dragging) return;
     const wasMoved = drag.moved;
     drag.dragging = false;
     setIsSliderDragging(false);
-    const el = sliderRef.current;
-    if (el?.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
 
     // 실제로 스크롤이 일어난 드래그였다면(1:1 스크롤 보정 때문에) 커서는 대개 드래그 시작 때와
     // 같은 카드 위에 남아 있어 mouseenter 가 재발생하지 않는다. 포인터 아래 카드를 직접 찾아
