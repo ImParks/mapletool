@@ -1,6 +1,6 @@
 ---
 name: maple-reset-cycles
-description: 메이플스토리 컨텐츠의 초기화 주기(일일/주간 퀘스트/주간 보스)와 체크리스트 완료 상태를 모델링하는 방법을 다루는 스킬. mapletool에서 일일/주간/보스 체크 완료 여부, 초기화 시각, "주기 키(period key)" 계산, 완료 자동 리셋(리셋 배치 불필요), 다음 초기화까지 남은 시간 표시, 멱등 완료 기록(중복 INSERT 방지) 등을 구현하거나 디버깅할 때 사용한다. 초기화, 리셋, 일일/주간/보스, 월요일 초기화, 목요일 초기화, KST, UTC+9, 완료 상태, 체크리스트 주기, currentPeriodKey, period_key, periodStart, dayNum, ResetType, daily/weekly_mon/weekly_thu, category 와 reset_type 구분, 새 초기화 주기(월간) 추가, 남은 시간/다음 초기화 같은 요청에 매칭된다.
+description: 메이플스토리 컨텐츠의 초기화 주기(일일/주간 퀘스트/주간 보스)와 체크리스트 완료 상태를 모델링하는 방법을 다루는 스킬. mapletool에서 일일/주간/보스 체크 완료 여부, 초기화 시각, "주기 키(period key)" 계산, 완료 자동 리셋(리셋 배치 불필요), 다음 초기화까지 남은 시간 표시, 멱등 완료 기록(중복 INSERT 방지) 등을 구현하거나 디버깅할 때 사용한다. 초기화, 리셋, 일일/주간/보스, 목요일 초기화, KST, UTC+9, 완료 상태, 체크리스트 주기, currentPeriodKey, period_key, periodStart, dayNum, ResetType, daily/weekly_thu/monthly, category 와 reset_type 구분, 새 초기화 주기 추가, 남은 시간/다음 초기화 같은 요청에 매칭된다.
 ---
 
 # 메이플 초기화 주기 & 체크리스트 완료 상태 모델링
@@ -10,17 +10,20 @@ mapletool은 일일/주간 퀘스트와 주간 보스의 완료 여부를 체크
 ## 초기화 규칙 (모든 시각 Asia/Seoul, UTC+9 고정)
 
 - **일일(daily)**: 매일 00:00 KST 초기화.
-- **주간 퀘스트(weekly_mon)**: 매주 **월요일** 00:00 KST 초기화. resetWeekday = 1.
-- **주간 보스(weekly_thu)**: 매주 **목요일** 00:00 KST 초기화. resetWeekday = 4.
-- **월간 보스(monthly)**: 매월 **1일** 00:00 KST 초기화. 현재 검은 마법사(넥슨 `cycle="bossMonthly"`)뿐.
+- **주간(weekly_thu)**: 매주 **목요일** 00:00 KST 초기화. resetWeekday = 4. **주간 퀘스트와 주간
+  보스가 전부 이 하나로 통일돼 있다** — 별도의 월요일 초기화는 없다.
+  > ⚠️ 과거엔 "주간 퀘스트는 월요일(weekly_mon), 주간 보스는 목요일(weekly_thu)"로 **잘못**
+  > 나눠 놨었다. 넥슨 API 는 콘텐츠별 초기화 요일을 알려주지 않아 확인할 방법이 없었고, 초기
+  > 설계 당시 근거 없이 월요일로 가정했다. 실제로는 주간 퀘스트도 목요일 초기화라는 것을
+  > 사용자 확인으로 정정했다(2026-07-30) — `weekly_mon` 은 `ResetType` 에서 완전히 제거했다.
+- **월간(monthly)**: 매월 **1일** 00:00 KST 초기화. 현재 검은 마법사(넥슨 `cycle="bossMonthly"`)뿐.
   넥슨 API 는 `cycle` 이 월간이라는 사실만 알려주고 초기화 시점은 알려주지 않으며, 스케줄러 API 의 `date` 조회 범위가 최근 13일뿐이라 월 경계를 관측해 확인할 수도 없다. 앵커는 인게임 확인으로 확정했다(2026-07-29).
 
 KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 UTC로 동작할 수 있으므로 시각 계산은 절대 `new Date()`의 로컬 필드(`getHours()`/`getDay()` 등)를 직접 쓰지 말고 항상 KST로 변환한다. `period.ts`는 `Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", ... })`로 변환하므로(`kstParts`), 서버 타임존과 무관하게 동일한 결과가 나온다.
 
-`ResetType = "daily" | "weekly_mon" | "weekly_thu" | "monthly"`. 사람이 읽는 라벨은 `RESET_LABEL` 맵(`Record<ResetType, string>`)을 쓴다. 실제 값:
+`ResetType = "daily" | "weekly_thu" | "monthly"`. 사람이 읽는 라벨은 `RESET_LABEL` 맵(`Record<ResetType, string>`)을 쓴다. 실제 값:
 
 - `daily` → `"매일 00시 초기화"`
-- `weekly_mon` → `"월요일 00시 초기화"`
 - `weekly_thu` → `"목요일 00시 초기화"`
 - `monthly` → `"매월 1일 00시 초기화"`
 
@@ -47,17 +50,15 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
 - `kstDayNumber(now)`: KST 자정 기준 일련번호. `Math.floor(Date.UTC(year, month-1, day) / 86400000)` — UTC epoch day가 아니라 **KST 날짜(year/month/day)를 그대로 UTC 정오 없이 자정으로 본 표시용 일수**다. 같은 KST 달력 날짜면 서버 타임존과 무관하게 같은 값이 나온다.
 - 키 형식 (아래 예시는 모두 **2026-06-23(KST 화요일, dayNum=20627)** 기준 — 코드로 직접 검증 가능):
   - `daily` → `` `d-${dayNum}` `` → `d-20627`
-  - `weekly_mon` → `` `weekly_mon-${periodStart}` `` → 직전 월요일은 2026-06-22(dayNum 20626) → `weekly_mon-20626`
   - `weekly_thu` → `` `weekly_thu-${periodStart}` `` → 직전 목요일은 2026-06-18(dayNum 20622) → `weekly_thu-20622`
   - `monthly` → `` `monthly-${year}-${MM}` `` (월은 2자리 zero-pad) → `monthly-2026-06`
-- 네 접두사(`d-` / `weekly_mon-` / `weekly_thu-` / `monthly-`)는 서로 배타적이다 — 접두사만으로 "그 주기의 키인가"를 판별할 수 있다(마이그레이션에서 낡은 행을 고를 때 유용).
+- 세 접두사(`d-` / `weekly_thu-` / `monthly-`)는 서로 배타적이다 — 접두사만으로 "그 주기의 키인가"를 판별할 수 있다(마이그레이션에서 낡은 행을 고를 때 유용). 과거엔 `weekly_mon-` 도 있었으나 완전히 제거됐다(아래 참고) — DB 에 그 접두사로 남은 완료 기록이 있어도 지우지 않고 그냥 낡은 행으로 둔다.
 - **키 형식은 절대 바꾸지 말 것.** `completions.period_key` 에 그대로 저장돼 있고 그 컬럼엔 CHECK 도 length 제한도 없어서, 형식을 바꾸면 이미 쌓인 완료 기록이 조용히 전부 고아가 된다(DB 가 막아주지 않는다).
-- 주간 `periodStart` 계산: 현재 KST 요일에서 직전 초기화 요일까지 거슬러 올라간 일수만큼 `dayNum`을 뺀다.
-  - `resetWeekday = resetType === "weekly_mon" ? 1 : 4`
-  - `diff = (weekday - resetWeekday + 7) % 7`
+- 주간 `periodStart` 계산: 현재 KST 요일에서 목요일(resetWeekday=4)까지 거슬러 올라간 일수만큼 `dayNum`을 뺀다.
+  - `diff = (weekday - 4 + 7) % 7`
   - `periodStart = dayNum - diff`
-  - 검증 예(화요일 weekday=2): `weekly_mon` → diff=(2-1+7)%7=1 → 20627-1=20626. `weekly_thu` → diff=(2-4+7)%7=5 → 20627-5=20622.
-  - 즉 같은 주기에 속한 모든 날은 같은 `periodStart`(직전 월/목요일의 dayNum)를 가지므로 키가 동일하다.
+  - 검증 예(화요일 weekday=2): diff=(2-4+7)%7=5 → 20627-5=20622.
+  - 즉 같은 주기에 속한 모든 날은 같은 `periodStart`(직전 목요일의 dayNum)를 가지므로 키가 동일하다.
 
 ## category 와 reset_type 은 서로 다른 개념 (혼동 금지)
 
@@ -66,7 +67,7 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
 - **`category`** (`ChecklistCategory = "daily" | "weekly" | "boss_daily" | "boss"`): **UI 표시 그룹**. 화면에서 묶어 보여줄 섹션. `CATEGORY_LABEL`(일일 컨텐츠/주간 퀘스트/일일 보스/주간·월간 보스), `CATEGORY_ORDER`(`["daily","weekly","boss_daily","boss"]`)로 라벨/정렬을 정한다. 보스 계열인지 판별할 땐 `isBossCategory()` 를 쓴다(캐릭터별 보스 선택 필터가 걸리는 그룹).
 - **`reset_type`** (`ResetType`): **초기화 주기(완료 판정에 사용)**. `currentPeriodKey`에 넘기는 값.
 
-이 둘은 보통 연관되지만 항상 1:1은 아니다. 가장 명확한 예가 보스다: `category: "boss"` 한 그룹 안에 `reset_type: "weekly_thu"`(주간 보스)와 `reset_type: "monthly"`(검은 마법사)가 **함께** 들어 있고, 반대로 `category: "boss_daily"` 는 `reset_type: "daily"` 로 일일 컨텐츠와 같은 주기를 공유한다. `category: "weekly"` 항목의 주기도 `weekly_mon`(월요일)이라 이름과 다르다.
+이 둘은 보통 연관되지만 항상 1:1은 아니다. 가장 명확한 예가 보스다: `category: "boss"` 한 그룹 안에 `reset_type: "weekly_thu"`(주간 보스)와 `reset_type: "monthly"`(검은 마법사)가 **함께** 들어 있고, 반대로 `category: "boss_daily"` 는 `reset_type: "daily"` 로 일일 컨텐츠와 같은 주기를 공유한다.
 
 보스의 `category` 는 `reset_type` 에서 파생한다(`checklist-data.ts` 의 `buildAllItems`: `reset_type === "daily" ? "boss_daily" : "boss"`). 별도 컬럼을 두지 않는 이유는 주기가 넥슨 `cycle` 에서 이미 결정되므로 두 값이 어긋날 여지만 생기기 때문이다. **완료 여부는 언제나 `reset_type`으로 계산하고, `category`는 화면 그룹핑/정렬에만 쓴다.** 절대 `category`로 주기 키를 만들지 말 것(`currentPeriodKey(item.category)`는 타입상 우연히 통과할 수 있는 `"daily"`/`"weekly"` 같은 값에서도 의미가 틀어진다 — 반드시 `item.reset_type`을 넘긴다).
 
@@ -105,6 +106,7 @@ KST는 서머타임이 없어 항상 UTC+9 고정이다. 서버(예: Vercel)는 
   - 표시는 (대상 KST 자정 − 현재 시각)을 시/분/초로 포맷. UTC+9 고정이라 DST 보정은 불필요.
   - 헬퍼가 필요하면 `period.ts`에 `nextResetAt(resetType, now): Date` 형태로 추가하고 위 키 계산과 동일한 `kstParts`/`kstDayNumber` KST 변환을 재사용할 것(시간 계산 로직을 여러 파일에 흩뿌리지 말 것).
 - **콘텐츠 목록 하드코딩 금지**: 어떤 보스/퀘스트가 어느 주기인지는 패치마다 바뀐다. 이 스킬과 `period.ts`는 메커니즘만, 실제 항목은 `presets.ts`(및 사용자별 커스텀 항목 DB)에서 관리한다.
+- **보스 처치 횟수 규칙(인게임 사양, 2026-07-30 확인)**: 일일 보스는 보스마다 1일 1회, 주간 보스는 보스마다 1주 1회 **+ 모든 주간 보스를 통틀어 주 12회** 상한(넥슨 스케줄러 API 의 `weekly_boss_clear_count`/`weekly_boss_clear_limit_count` 필드가 이 카운터다 — `scheduler-state.ts` 의 `NormalizedSchedulerState.weeklyBossClear` 로 이미 정규화돼 있지만 현재 UI 는 표시하지 않는다), 월간 보스는 보스마다 1달 1회. **일일 보스를 잡아도 주간 12회 카운터는 차감되지 않는다** — 별개의 카운터다. 초기화 시각은 각각 이 문서의 규칙(일일=매일 자정, 주간=목요일 자정, 월간=매월 1일 자정)과 동일하다.
 
 ## 관련 설정
 

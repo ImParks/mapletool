@@ -127,6 +127,10 @@ grant execute on function public.discover_boss_preset(text, text, text, text) to
 
 -- ----------------------------------------------------------------------------
 -- discover_quest_preset(p_name, p_category, p_reset_type, p_nexon_content_name) returns text
+--
+-- 2026-07-30 정정: p_reset_type 검증을 'weekly_mon' → 'weekly_thu' 로 고쳤다. 주간 퀘스트도
+-- 주간 보스와 동일하게 목요일 초기화다(예전엔 월요일로 잘못 가정했었다). 이 파일을 재적용해도
+-- 그 버그가 되살아나지 않도록 여기서 고친다(운영 DB 의 기존 데이터 정정은 20260730100000 담당).
 -- ----------------------------------------------------------------------------
 create or replace function public.discover_quest_preset(
   p_name               text,
@@ -152,8 +156,8 @@ begin
   if p_category not in ('daily', 'weekly') then
     raise exception 'discover_quest_preset(): category 는 daily 또는 weekly 여야 합니다.';
   end if;
-  if p_reset_type not in ('daily', 'weekly_mon') then
-    raise exception 'discover_quest_preset(): reset_type 은 daily 또는 weekly_mon 이어야 합니다.';
+  if p_reset_type not in ('daily', 'weekly_thu') then
+    raise exception 'discover_quest_preset(): reset_type 은 daily 또는 weekly_thu 여야 합니다 (받은 값: %)', p_reset_type;
   end if;
   if p_nexon_content_name is null or p_nexon_content_name = '' then
     raise exception 'discover_quest_preset(): nexon_content_name 은 비어 있을 수 없습니다.';
@@ -199,7 +203,7 @@ end;
 $$;
 
 comment on function public.discover_quest_preset(text, text, text, text) is
-  '넥슨 스케줄러 응답에서 발견된 미등록 daily/weekly 콘텐츠를 find-or-create 로 등록. (category, nexon_content_name) 정확 일치 조합이 이미 있으면 그 id 반환, 없으면 신규 삽입 후 id 반환. SECURITY DEFINER — 일반 사용자의 quest_presets 직접 insert 를 막는 RLS 를 우회해 이 좁은 로직만 실행한다.';
+  '넥슨 스케줄러 응답에서 발견된 미등록 daily/weekly 콘텐츠를 find-or-create 로 등록. (category, nexon_content_name) 정확 일치 조합이 이미 있으면 그 id 반환, 없으면 신규 삽입 후 id 반환. reset_type 은 daily 또는 weekly_thu(2026-07-30 이전엔 weekly_mon 이었으나 정정됨). SECURITY DEFINER — 일반 사용자의 quest_presets 직접 insert 를 막는 RLS 를 우회해 이 좁은 로직만 실행한다.';
 
 revoke all on function public.discover_quest_preset(text, text, text, text) from public;
 revoke all on function public.discover_quest_preset(text, text, text, text) from anon;

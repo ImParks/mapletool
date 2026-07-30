@@ -1,11 +1,20 @@
 // 메이플 컨텐츠 초기화 주기 계산 (한국 시간 KST 기준)
 //  - daily       : 매일 00:00 초기화
-//  - weekly_mon  : 매주 월요일 00:00 초기화 (주간 퀘스트)
-//  - weekly_thu  : 매주 목요일 00:00 초기화 (주간 보스)
+//  - weekly_thu  : 매주 목요일 00:00 초기화 (주간 퀘스트 + 주간 보스 — 전부 목요일이다)
 //  - monthly     : 매월 1일 00:00 초기화 (월간 보스 — 검은 마법사)
 // 각 항목의 "현재 주기 키"를 만들어, 완료 기록의 존재 여부로 완료 상태를 판단한다.
-
-export type ResetType = "daily" | "weekly_mon" | "weekly_thu" | "monthly";
+//
+// ⚠️ 과거엔 "weekly_mon"(월요일 초기화, 주간 퀘스트 전용)이 별도로 있었다. 넥슨 API 는 콘텐츠의
+// 초기화 요일을 알려주지 않아 확인할 방법이 없었고, 초기 설계 당시 잘못 월요일로 가정했다.
+// 실제로는 주간 퀘스트도 주간 보스와 똑같이 목요일에 초기화된다 — 사용자 확인으로 정정
+// (2026-07-30). 완전히 제거했다(단순 미사용 처리가 아니라 타입에서 지운 이유는, 이 값이
+// Record<ResetType,...> 전수 나열이 있는 곳마다 계속 유령처럼 남아 있으면 나중에 "그럼 월요일
+// 초기화가 실제로 있나?" 하는 혼동을 다시 부르기 때문이다). 배포 전에 이미 weekly_mon 으로
+// 저장된 completions 행이 있다면, 그 period_key(`weekly_mon-<dayNum>`)는 이제 아무 항목의
+// reset_type 과도 일치하지 않는 낡은 기록으로 남는다 — 지우지 않는다(기존 정책과 동일. 지우려는
+// 시도가 오히려 이 파일에서 period_key 를 재계산하는 규약 위반이 된다). page.tsx 의 항목별
+// period_key 검증(2026-07-29 수정)이 그 낡은 기록을 조용히 걸러낸다.
+export type ResetType = "daily" | "weekly_thu" | "monthly";
 
 /**
  * 전체 ResetType 목록. "현재 주기의 완료 기록을 전부 조회" 하는 곳이 주기를 하나씩
@@ -14,12 +23,7 @@ export type ResetType = "daily" | "weekly_mon" | "weekly_thu" | "monthly";
  * satisfies 로 유니온 전수를 강제하지는 못하므로, 새 주기를 추가하면 여기에도 반드시 넣는다 —
  * 빠뜨리면 currentPeriodKeys() 가 그 주기를 못 돌려주고 완료가 화면에서 사라진다.
  */
-export const ALL_RESET_TYPES: readonly ResetType[] = [
-  "daily",
-  "weekly_mon",
-  "weekly_thu",
-  "monthly",
-] as const;
+export const ALL_RESET_TYPES: readonly ResetType[] = ["daily", "weekly_thu", "monthly"] as const;
 
 /**
  * 주어진 시각을 KST 기준 연/월/일/요일로 변환한다(일=0, 월=1, … 토=6).
@@ -103,10 +107,9 @@ export function currentPeriodKey(resetType: ResetType, now: Date = new Date()): 
     case "daily":
       return `d-${dayNum}`;
 
-    case "weekly_mon":
     case "weekly_thu": {
-      // 주간: 마지막 초기화 요일이 지난 시점의 일수를 기준으로 묶는다.
-      const resetWeekday = resetType === "weekly_mon" ? 1 : 4;
+      // 주간: 마지막 목요일(초기화 요일)이 지난 시점의 일수를 기준으로 묶는다.
+      const resetWeekday = 4; // 목=4 (kstParts 의 weekday 매핑 기준)
       // 이번 주기 시작일까지 거슬러 올라간 일수
       const diff = (weekday - resetWeekday + 7) % 7;
       const periodStart = dayNum - diff;
@@ -137,7 +140,6 @@ export function currentPeriodKeys(now: Date = new Date()): string[] {
 
 export const RESET_LABEL: Record<ResetType, string> = {
   daily: "매일 00시 초기화",
-  weekly_mon: "월요일 00시 초기화",
   weekly_thu: "목요일 00시 초기화",
   // 넥슨 API 는 cycle="bossMonthly" 라는 사실만 알려주고 초기화 앵커는 알려주지 않으며,
   // date 파라미터 조회 범위가 최근 13일뿐이라 월 경계를 관측해 확인할 수도 없다.

@@ -291,8 +291,14 @@ raise(행 없음), 관리자 B로 호출 시 A/B 모두 마스킹된 이메일�
 ## period_key 포맷 (검증됨, `src/lib/period.ts` 단일 진실)
 
 - daily → `d-<KST epochDay>` (예: `d-20636`)
-- weekly_mon → `weekly_mon-<직전 월요일 epochDay>` (예: `weekly_mon-20633`)
 - weekly_thu → `weekly_thu-<직전 목요일 epochDay>` (예: `weekly_thu-20636`)
+- monthly → `monthly-<YYYY>-<MM>` (예: `monthly-2026-07`)
+
+과거엔 `weekly_mon`(월요일 초기화, 주간 퀘스트 전용)도 있었으나 완전히 제거됐다 — 넥슨은
+콘텐츠별 초기화 요일을 알려주지 않아 확인할 방법이 없었고, 초기 설계 당시 근거 없이 월요일로
+가정했다. 실제로는 주간 퀘스트도 주간 보스와 동일하게 목요일 초기화라는 것을 사용자 확인으로
+정정했다(2026-07-30). `weekly_mon-*` 접두사로 남은 과거 완료 기록은 지우지 않고 낡은 행으로
+둔다(현재 어떤 항목의 reset_type 과도 일치하지 않아 화면에는 영향 없음).
 
 숫자는 KST 기준으로 매일 증가하므로 마이그레이션/검증에 하드코딩하지 말고 항상 `currentPeriodKey()`로
 계산한다. DB는 `period_key`를 text로 저장할 뿐 계산하지 않는다.
@@ -302,7 +308,7 @@ raise(행 없음), 관리자 B로 호출 시 A/B 모두 마스킹된 이메일�
 - 넥슨 키(`user_secrets.nexon_api_key`)는 **서버에서만** 읽고, 응답/로그/에러에 원문을 담지 않는다.
   profiles select 시 키 컬럼이 없음을 전제로 하되(분리됨), 습관적으로 필요한 컬럼만 명시한다.
 - `period_key`/`user_id`는 항상 서버에서 확정한다(클라이언트 입력 불신).
-- `category`(표시 그룹: daily/weekly/boss)와 `reset_type`(초기화 주기: daily/weekly_mon/weekly_thu)은
+- `category`(표시 그룹: daily/weekly/boss_daily/boss)와 `reset_type`(초기화 주기: daily/weekly_thu/monthly)은
   다른 개념이다. 완료·초기화 판정은 반드시 `reset_type`으로.
 - 보스 목록은 `boss_presets`(DB)에서 조회해 daily/weekly 코드 프리셋과 합쳐 `CATEGORY_ORDER` 순으로 표시.
 - 인증/세션은 기존 `src/lib/supabase/{server,client,middleware}.ts` + `src/middleware.ts`를 재사용한다.

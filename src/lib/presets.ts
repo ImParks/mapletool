@@ -48,10 +48,10 @@ export const PRESET_ITEMS: PresetItem[] = [
   { id: "d4", name: "유니온 출석/배치", category: "daily", reset_type: "daily" },
   { id: "d5", name: "일일 의뢰 (소멸의 여로 등)", category: "daily", reset_type: "daily" },
 
-  // 주간 퀘스트 (월요일 초기화)
-  { id: "w1", name: "무릉도장", category: "weekly", reset_type: "weekly_mon", nexonMatch: ["무릉도장"] },
-  { id: "w2", name: "주간 의뢰 (에르다 등)", category: "weekly", reset_type: "weekly_mon" },
-  { id: "w3", name: "플래그 레이스 / 길드 컨텐츠", category: "weekly", reset_type: "weekly_mon" },
+  // 주간 퀘스트 (목요일 초기화 — 주간 보스와 동일. 예전엔 월요일로 잘못 가정했었다)
+  { id: "w1", name: "무릉도장", category: "weekly", reset_type: "weekly_thu", nexonMatch: ["무릉도장"] },
+  { id: "w2", name: "주간 의뢰 (에르다 등)", category: "weekly", reset_type: "weekly_thu" },
+  { id: "w3", name: "플래그 레이스 / 길드 컨텐츠", category: "weekly", reset_type: "weekly_thu" },
 ];
 
 export const CATEGORY_LABEL: Record<ChecklistCategory, string> = {

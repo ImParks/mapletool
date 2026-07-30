@@ -329,12 +329,10 @@ export async function syncCharacterSchedule(
       continue;
     }
     matchedWeeklyNames.add(normalizeName(match.name));
-    // ⚠️ 미검증 단정: 넥슨은 주간 콘텐츠의 초기화 **요일**을 알려주지 않는다. weekly_contents
-    // 를 전부 월요일 초기화로 보는 것은 버그2(보스 주기 단정)와 구조가 같은 가정이다.
-    // 목요일 초기화 주간 콘텐츠가 섞여 있으면 그 항목만 잘못된 시점에 초기화된다. 판별하려면
-    // 콘텐츠명을 하드코딩해야 하는데 그건 scheduler-state.ts 의 "이름 하드코딩 금지" 규약과
-    // 충돌하므로, 현재는 알면서 감수한다.
-    await applyDone(c.itemId, "weekly_mon", match.doneState, "synced");
+    // 주간 퀘스트는 주간 보스와 동일하게 목요일 초기화다(2026-07-30 확인 — 예전엔 월요일로
+    // 잘못 가정했었다). 넥슨이 콘텐츠별 초기화 요일을 알려주진 않지만, 주간 콘텐츠 전체가
+    // 목요일 하나로 통일돼 있어(주간 퀘스트/주간 보스 공통) 항목별로 나눠 판별할 필요가 없다.
+    await applyDone(c.itemId, "weekly_thu", match.doneState, "synced");
   }
 
   // 2) boss: 이 캐릭터가 선택한(또는 전체선택 정책의) boss_presets 중 매칭 키
@@ -385,12 +383,12 @@ export async function syncCharacterSchedule(
     const { data: newId, error } = await supabase.rpc("discover_quest_preset", {
       p_name: c.name,
       p_category: "weekly",
-      p_reset_type: "weekly_mon",
+      p_reset_type: "weekly_thu",
       p_nexon_content_name: c.name,
     });
     if (error || !newId) continue;
     newPresetItemIds.push(newId as string);
-    await applyDone(newId as string, "weekly_mon", c.doneState, "discovered");
+    await applyDone(newId as string, "weekly_thu", c.doneState, "discovered");
   }
   for (const b of state.boss) {
     if (!b.registered) continue;

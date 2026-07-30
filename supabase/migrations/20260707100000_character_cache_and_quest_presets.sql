@@ -67,7 +67,10 @@ create table if not exists public.quest_presets (
   id                 text        primary key default gen_random_uuid()::text,
   name               text        not null,
   category           text        not null check (category in ('daily', 'weekly')),
-  reset_type         text        not null check (reset_type in ('daily', 'weekly_mon')),
+  -- 2026-07-30 정정: 주간 퀘스트도 주간 보스와 동일하게 목요일 초기화다(예전엔 월요일로
+  -- 잘못 가정했었다). 이 파일을 재적용해도 그 버그가 되살아나지 않도록 여기서도 고친다
+  -- (운영 DB 의 기존 weekly_mon 행 정정은 20260730100000 담당).
+  reset_type         text        not null check (reset_type in ('daily', 'weekly_thu')),
   nexon_content_name text        not null,
   list_order         int         not null default 0,
   created_by         uuid        references auth.users(id) on delete set null,
@@ -77,7 +80,7 @@ create table if not exists public.quest_presets (
 
 comment on table public.quest_presets is 'boss_presets 의 daily/weekly 버전. 넥슨 스케줄러에서 발견됐지만 코드 프리셋(src/lib/presets.ts PRESET_ITEMS)에 없는 일일/주간 콘텐츠. req_level/req_force/rec_hexa/symbol_type 같은 보스 전용 요구치 필드는 없음. 인증 사용자 전체 select, 일반 insert/update/delete 는 RLS 로 막고 discover_quest_preset() RPC(SECURITY DEFINER)로만 생성한다.';
 comment on column public.quest_presets.category is '표시 그룹(daily/weekly). PresetItem.category 와 동일 개념 — reset_type(초기화 주기)과는 다른 값이니 혼동 금지.';
-comment on column public.quest_presets.reset_type is '초기화 주기(period.ts ResetType 중 daily/weekly_mon 만 해당). 완료 판정은 이 값으로 currentPeriodKey 계산.';
+comment on column public.quest_presets.reset_type is '초기화 주기(daily 또는 weekly_thu 만 해당 — 주간 퀘스트는 목요일 초기화). 완료 판정은 이 값으로 currentPeriodKey 계산.';
 comment on column public.quest_presets.nexon_content_name is '넥슨 스케줄러 API 원문 콘텐츠명. discover_quest_preset() 의 find-or-create 매칭 키(category 와 조합해 유니크, 정확 일치만 매칭).';
 comment on column public.quest_presets.created_by is '자동 등록한 사용자(discover_quest_preset 호출자). 계정 삭제돼도 프리셋은 유지(on delete set null) — 공용 데이터라 개인 데이터 삭제 대상이 아님.';
 
