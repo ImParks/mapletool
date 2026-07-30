@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/Input";
 import { Logo } from "@/components/ui/Logo";
 import { cn } from "@/lib/cn";
 import { clampInt } from "@/lib/num";
-import { NEXON_BOSS_DIFFICULTIES } from "@/lib/scheduler-state";
+import { RESET_LABEL, type ResetType } from "@/lib/period";
+import { BOSS_RESET_TYPES, NEXON_BOSS_DIFFICULTIES } from "@/lib/scheduler-state";
 import { runAction } from "@/lib/safe-action";
 import { addBossPreset, updateBossPreset, type BossPresetFields } from "./boss-preset-actions";
 
@@ -37,6 +38,8 @@ export interface AdminBossPresetDTO {
   nexonContentName: string | null;
   /** 넥슨 스케줄러 API 원문 난이도(영문 소문자 — "hard" 등). nexonContentName 과 둘 다 있어야 자동 매칭. */
   nexonDifficulty: string | null;
+  /** 초기화 주기(일일/주간/월간). completions 의 period_key 계산에 쓰이는 권위 값. */
+  resetType: ResetType;
 }
 
 interface AdminPageClientProps {
@@ -44,6 +47,14 @@ interface AdminPageClientProps {
   recentAccess: RecentAccessDTO[];
   bossPresets: AdminBossPresetDTO[];
 }
+
+// 보스 관리 행이 빽빽해서 RESET_LABEL 의 전체 문구("매일 00시 초기화")를 쓰면 줄바꿈이 생긴다.
+// 이 화면 전용 축약 라벨 — 전체 설명은 select 자체의 title(hover)로 보완한다.
+const BOSS_RESET_TYPE_SHORT_LABEL: Record<ResetType, string> = {
+  daily: "일일",
+  weekly_thu: "주간",
+  monthly: "월간",
+};
 
 const SAVED_LABEL_DURATION_MS = 1600;
 // "최근 5분 이내 접속 = 활동중" — 디자인 문서에 정확한 임계값이 없어 이 페이지에서 정한 기준.
@@ -122,6 +133,7 @@ function defaultDraft(preset: AdminBossPresetDTO): BossPresetFields {
     symbolType: preset.symbolType ?? "arcane",
     nexonContentName: preset.nexonContentName ?? "",
     nexonDifficulty: preset.nexonDifficulty ?? "",
+    resetType: preset.resetType,
   };
 }
 
@@ -153,6 +165,7 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
     preset.symbolType,
     preset.nexonContentName,
     preset.nexonDifficulty,
+    preset.resetType,
   ]);
 
   const dirty =
@@ -161,7 +174,8 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
     draft.recHexa !== original.recHexa ||
     draft.symbolType !== original.symbolType ||
     draft.nexonContentName !== original.nexonContentName ||
-    draft.nexonDifficulty !== original.nexonDifficulty;
+    draft.nexonDifficulty !== original.nexonDifficulty ||
+    draft.resetType !== original.resetType;
 
   function handleSave() {
     setError(null);
@@ -209,6 +223,22 @@ function BossPresetRow({ preset, onSaved }: BossPresetRowProps) {
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5">
+          <span className="text-[10.5px] font-bold text-maple-text-muted">초기화</span>
+          <select
+            value={draft.resetType}
+            onChange={(event) => setDraft((d) => ({ ...d, resetType: event.target.value as ResetType }))}
+            aria-label={`${preset.name} 초기화 주기`}
+            title={RESET_LABEL[draft.resetType]}
+            className="border-none bg-transparent text-xs font-extrabold text-maple-text-primary outline-none"
+          >
+            {BOSS_RESET_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {BOSS_RESET_TYPE_SHORT_LABEL[t]}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="flex items-center gap-1.5 rounded-lg border border-maple-line bg-maple-surface-inset px-2.5 py-1.5">
           <span className="text-[10.5px] font-bold text-maple-text-muted">필요 Lv</span>
           <input
@@ -292,6 +322,8 @@ const EMPTY_FORM = {
   symbolType: "arcane" as const,
   nexonContentName: "",
   nexonDifficulty: "",
+  // 대부분의 보스가 주간이라(관리자가 기존에 추가해 온 값들도 전부 weekly_thu) 기본값으로 둔다.
+  resetType: "weekly_thu" as ResetType,
 };
 
 export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossPresets }: AdminPageClientProps) {
@@ -305,6 +337,7 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
     symbolType: "arcane" | "authentic";
     nexonContentName: string;
     nexonDifficulty: string;
+    resetType: ResetType;
   }>(EMPTY_FORM);
   const [addError, setAddError] = useState<string | null>(null);
   const [isAdding, startAddTransition] = useTransition();
@@ -321,6 +354,7 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
               symbolType: fields.symbolType,
               nexonContentName: fields.nexonContentName,
               nexonDifficulty: fields.nexonDifficulty,
+              resetType: fields.resetType,
             }
           : b
       )
@@ -345,6 +379,7 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
         symbolType: form.symbolType,
         nexonContentName: form.nexonContentName,
         nexonDifficulty: form.nexonDifficulty,
+        resetType: form.resetType,
       };
       const result = await runAction(() => addBossPreset({ name, ...fields }), "보스 추가 중 오류가 발생했습니다.");
       if ("error" in result) {
@@ -456,6 +491,22 @@ export function AdminPageClient({ stats, recentAccess, bossPresets: initialBossP
             value={form.name}
             onChange={(event) => setForm((f) => ({ ...f, name: event.target.value }))}
           />
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-extrabold text-maple-text-secondary">초기화 주기</span>
+            {/* 같은 보스라도 난이도에 따라 주기가 다를 수 있다(예: 자쿰 노말=일일, 자쿰 카오스=
+                주간) — 그래서 "보스 종류"가 아니라 이 프리셋 행 하나하나에 주기가 붙는다. */}
+            <select
+              value={form.resetType}
+              onChange={(event) => setForm((f) => ({ ...f, resetType: event.target.value as ResetType }))}
+              className="h-11 rounded-xl border border-maple-line bg-maple-surface-inset px-3 text-sm font-bold text-maple-text-primary outline-none focus:border-maple-orange"
+            >
+              {BOSS_RESET_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {RESET_LABEL[t]}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="grid grid-cols-2 gap-3">
             <Input
               label="필요 레벨"

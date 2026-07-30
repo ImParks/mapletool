@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { kstMidnight, kstParts } from "@/lib/period";
+import { asResetType, kstMidnight, kstParts } from "@/lib/period";
 import { Card } from "@/components/ui/Card";
 import { CenteredNotice } from "@/components/CenteredNotice";
 import { AdminPageClient, type AdminBossPresetDTO, type AdminStatDTO, type RecentAccessDTO } from "./AdminPageClient";
@@ -30,6 +30,7 @@ interface BossPresetRow {
   rec_hexa: number | null;
   nexon_content_name: string | null;
   nexon_difficulty: string | null;
+  reset_type: string;
 }
 
 /** 오늘(KST) 00:00 시각. (KST 변환은 period.ts의 공용 kstParts/kstMidnight 재사용) */
@@ -88,7 +89,7 @@ export default async function AdminPage() {
     supabase.rpc("admin_recent_access", { p_limit: 20 }),
     supabase
       .from("boss_presets")
-      .select("id, name, req_level, symbol_type, req_force, rec_hexa, nexon_content_name, nexon_difficulty")
+      .select("id, name, req_level, symbol_type, req_force, rec_hexa, nexon_content_name, nexon_difficulty, reset_type")
       .order("list_order"),
   ]);
 
@@ -129,6 +130,11 @@ export default async function AdminPage() {
     recHexa: b.rec_hexa,
     nexonContentName: b.nexon_content_name,
     nexonDifficulty: b.nexon_difficulty,
+    // asResetType 으로 좁힌다(무검증 캐스팅 금지 — period.ts 의 다른 경계들과 동일 규칙).
+    // weekly_thu 로 폴백하는 이유: DB CHECK 는 보스에 weekly_mon 까지 허용하지만 앱은 절대
+    // 쓰지 않으므로, 그런 값이 보이면 화면에 뭔가는 골라져 있어야 관리자가 고쳐 저장할 수
+    // 있다(저장 전까지는 DB 원본이 안 바뀌므로 이 폴백이 데이터를 조용히 바꾸지 않는다).
+    resetType: asResetType(b.reset_type) ?? "weekly_thu",
   }));
 
   return (

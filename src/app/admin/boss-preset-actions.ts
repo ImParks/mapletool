@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import type { ActionResult } from "@/lib/action-result";
 import { clampInt } from "@/lib/num";
+import type { ResetType } from "@/lib/period";
+import { BOSS_RESET_TYPES } from "@/lib/scheduler-state";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -48,6 +50,22 @@ export interface BossPresetFields {
    * 배포돼 자동 동기화가 통째로 죽은 적이 있어, 화면 입력을 select 로 제한했다.
    */
   nexonDifficulty: string | null;
+  /**
+   * 이 보스의 초기화 주기(일일/주간/월간). completions 의 period_key 를 만드는 데 쓰이는
+   * 권위 값이라 — actions.ts 의 수동 체크도, warmup.ts 의 자동 동기화도 이 컬럼을 그대로
+   * 읽는다(넥슨 cycle 값이 아니라). 같은 보스라도 난이도에 따라 주기가 다를 수 있다(예:
+   * 자쿰 easy·normal 은 일일, 자쿰 chaos 는 주간) — 그래서 보스별이 아니라 (이름,난이도)
+   * 조합인 이 행 하나하나에 독립적으로 붙는다.
+   */
+  resetType: ResetType;
+}
+
+/**
+ * 관리자가 고른 주기가 보스에 허용된 값인지 검증한다(클라이언트 select 가 이미 걸러주지만,
+ * 서버 액션은 클라이언트 입력을 신뢰하지 않는다 — safe-action 관례).
+ */
+function validateBossResetType(value: ResetType): ResetType | null {
+  return BOSS_RESET_TYPES.includes(value) ? value : null;
 }
 
 /** 빈 문자열/공백만 있는 입력을 null 로 정규화한다(폼의 빈 칸 = "매칭 안 함"). */
@@ -73,9 +91,18 @@ function normalizeDifficulty(value: string | null | undefined): string | null {
 export async function updateBossPreset(id: string, fields: BossPresetFields): Promise<ActionResult<{ ok: true }>> {
   if (!id) return { error: "잘못된 요청입니다." };
 
+  const resetType = validateBossResetType(fields.resetType);
+  if (!resetType) return { error: "잘못된 초기화 주기입니다." };
+
   const auth = await requireAdmin();
   if (!auth.ok) return { error: auth.error };
 
+  // ⚠️ 주기를 바꾸면 이번 주기의 완료 표시가 화면에서 사라질 수 있다(의도된 동작).
+  // completions 는 저장 당시의 reset_type 으로 계산한 period_key 를 갖는데, page.tsx 가
+  // "항목의 **현재** reset_type 으로 계산한 키와 일치하는 완료만" 인정하기 때문이다. 예를 들어
+  // 목요일 초기화 보스를 일일로 바꾸면, 그 보스를 이번 주 초기화 이후 잡아 기록해 둔 completions
+  // 행은 새 기준(일일 키)과 안 맞아 "미완료"로 보인다 — 데이터가 사라진 게 아니라 새 주기
+  // 기준으로 다시 판정된 것이다.
   const { error } = await auth.supabase
     .from("boss_presets")
     .update({
@@ -85,6 +112,7 @@ export async function updateBossPreset(id: string, fields: BossPresetFields): Pr
       rec_hexa: clampInt(fields.recHexa, 0, 30),
       nexon_content_name: normalizeNullableText(fields.nexonContentName),
       nexon_difficulty: normalizeDifficulty(fields.nexonDifficulty),
+      reset_type: resetType,
     })
     .eq("id", id);
 
@@ -109,6 +137,9 @@ export async function addBossPreset(fields: NewBossPresetFields): Promise<Action
   const name = fields.name.trim();
   if (!name) return { error: "보스 이름을 입력해 주세요." };
 
+  const resetType = validateBossResetType(fields.resetType);
+  if (!resetType) return { error: "잘못된 초기화 주기입니다." };
+
   const auth = await requireAdmin();
   if (!auth.ok) return { error: auth.error };
 
@@ -125,7 +156,7 @@ export async function addBossPreset(fields: NewBossPresetFields): Promise<Action
     .from("boss_presets")
     .insert({
       name,
-      reset_type: "weekly_thu",
+      reset_type: resetType,
       req_level: clampInt(fields.reqLevel, 0, 300),
       symbol_type: fields.symbolType === "authentic" ? "authentic" : "arcane",
       req_force: clampInt(fields.reqForce, 0, 99999),

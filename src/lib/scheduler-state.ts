@@ -184,6 +184,18 @@ export function bossCycleToResetType(cycle: string | undefined | null): ResetTyp
   }
 }
 
+/**
+ * 보스가 가질 수 있는 초기화 주기(위 bossCycleToResetType 의 공역과 동일 — daily/weekly_thu/
+ * monthly 전부). ResetType 자체가 이 세 값뿐이라(주간 퀘스트도 목요일 초기화로 통일돼
+ * weekly_mon 이 완전히 제거됐다) 지금은 사실상 ALL_RESET_TYPES 와 같은 목록이지만, 별도로
+ * 두는 이유는 "보스에 허용되는 값"이라는 의미를 명시하기 위해서다 — 나중에 보스 아닌 새
+ * 주기(예: 격주)가 추가되면 이 목록이 다시 갈라진다.
+ *
+ * 관리자 화면(보스 관리/보스 추가)의 주기 선택지와 discover_boss_preset RPC(SQL) 의 CHECK 가
+ * 이 목록과 반드시 일치해야 한다.
+ */
+export const BOSS_RESET_TYPES: readonly ResetType[] = ["daily", "weekly_thu", "monthly"] as const;
+
 function toContent(c: SchedulerContent): NormalizedContent {
   return {
     name: c.content_name,
