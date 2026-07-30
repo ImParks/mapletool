@@ -94,6 +94,15 @@ interface MainScreenClientProps {
 
 const HIDE_DONE_KEY = "mapletool:hideDone";
 const AUTO_SORT_KEY = "mapletool:autoSort";
+const COLLAPSED_CATEGORIES_KEY = "mapletool:collapsedCategories";
+
+/**
+ * 주간 보스 처치 보상은 잡는 보스 가짓수와 무관하게 **주 12회로 고정**이다(인게임 사양,
+ * 2026-07-30 확인 — 일일 보스는 이 카운트에 포함되지 않고, 주간 보스만 잡을 때마다 차감된다).
+ * "주간·월간 보스" 섹션의 진행바/배지 분모를 이 상수로 고정 표시한다 — 캐릭터가 보스를 몇
+ * 마리 선택/추적하든 실제로 의미 있는 목표는 "이번 주 보상 12회를 채웠는가"이기 때문이다.
+ */
+const WEEKLY_BOSS_REWARD_CAP = 12;
 
 /** 스냅샷 자동 보충을 시작하기 전 기다리는 시간. 캐릭터를 빠르게 훑을 때의 넥슨 호출 폭주를 막는다. */
 const AUTO_SNAPSHOT_DELAY_MS = 500;
@@ -215,12 +224,26 @@ export function MainScreenClient({
   // localStorage 에만 저장한다(LoginForm 의 "아이디 저장" 프리필과 동일 패턴: 마운트 후 hydrate).
   const [hideDone, setHideDoneState] = useState(false);
   const [autoSort, setAutoSortState] = useState(true);
+  // 카테고리 섹션(일일/주간/일일보스/주간·월간보스)의 접힘 여부. 캐릭터가 아니라 "카테고리
+  // 종류" 기준으로 저장한다 — "나는 항상 일일 항목을 접어두고 본다" 같은 취향이라 캐릭터를
+  // 넘겨도 유지되는 게 자연스럽다(hideDone/autoSort 와 동일하게 표시 전용 로컬 설정).
+  const [collapsedCategories, setCollapsedCategoriesState] = useState<Partial<Record<ChecklistCategory, boolean>>>(
+    {}
+  );
 
   useEffect(() => {
     const savedHideDone = window.localStorage.getItem(HIDE_DONE_KEY);
     if (savedHideDone !== null) setHideDoneState(savedHideDone === "1");
     const savedAutoSort = window.localStorage.getItem(AUTO_SORT_KEY);
     if (savedAutoSort !== null) setAutoSortState(savedAutoSort === "1");
+    const savedCollapsed = window.localStorage.getItem(COLLAPSED_CATEGORIES_KEY);
+    if (savedCollapsed !== null) {
+      try {
+        setCollapsedCategoriesState(JSON.parse(savedCollapsed));
+      } catch {
+        // 잘못된 JSON이면 기본값(전부 펼침) 유지
+      }
+    }
   }, []);
 
   function setHideDone(next: boolean) {
@@ -231,6 +254,14 @@ export function MainScreenClient({
   function setAutoSort(next: boolean) {
     setAutoSortState(next);
     window.localStorage.setItem(AUTO_SORT_KEY, next ? "1" : "0");
+  }
+
+  function toggleCategoryCollapsed(category: ChecklistCategory) {
+    setCollapsedCategoriesState((prev) => {
+      const next = { ...prev, [category]: !prev[category] };
+      window.localStorage.setItem(COLLAPSED_CATEGORIES_KEY, JSON.stringify(next));
+      return next;
+    });
   }
 
   // 완료 기록 초기화(#8) / 로그아웃·회원탈퇴(#10) 확인 다이얼로그 + pending 상태.
@@ -331,11 +362,23 @@ export function MainScreenClient({
         .filter((i) => !doneMap[`${char.ocid}::${i.id}`])
         .reduce((sum, i) => sum + (durations[i.id] ?? 0), 0);
       const totalMinutes = catItems.reduce((sum, i) => sum + (durations[i.id] ?? 0), 0);
+      // "주간·월간 보스" 섹션의 12 캡은 **주간 보스에만** 적용된다 — 월간 보스(검은 마법사)는
+      // 별도 월간 주기라 주간 보상 횟수에 포함되지 않는다(인게임 사양, 2026-07-30 확인).
+      // 항목 자체(체크박스)는 카테고리 안에 weekly_thu/monthly 가 섞여 그대로 보이지만, 12 를
+      // 분모로 하는 집계 배지의 분자는 weekly_thu 항목만 세어야 한다 — 월간 클리어를 여기
+      // 섞으면 실제로 11번만 잡았는데 "12/12"로 잘못 표시될 수 있다.
+      const doneCountForBadge =
+        cat === "boss" ? doneItems.filter((i) => i.resetType === "weekly_thu").length : doneItems.length;
+
       return {
         category: cat,
         items: catItems,
-        done: doneItems.length,
-        total: catItems.length,
+        done: doneCountForBadge,
+        // "주간·월간 보스" 섹션만 실제 추적 항목 수 대신 게임 실제 보상 상한(12)을 분모로
+        // 고정한다(WEEKLY_BOSS_REWARD_CAP 선언부 참고). 그 결과 total 이 항목 수와 달라지므로
+        // "항목이 있는지" 판정은 total 이 아니라 catItems.length(=itemCount)를 따로 써야 한다
+        // — ChecklistSection 호출부에서 itemCount 를 별도로 넘기는 이유가 이것이다.
+        total: cat === "boss" ? WEEKLY_BOSS_REWARD_CAP : catItems.length,
         remainMinutes,
         totalMinutes,
       };
@@ -1093,6 +1136,9 @@ export function MainScreenClient({
                         category={cat.category}
                         done={cat.done}
                         total={cat.total}
+                        itemCount={cat.items.length}
+                        collapsed={!!collapsedCategories[cat.category]}
+                        onToggleCollapsed={() => toggleCategoryCollapsed(cat.category)}
                         remainLabel={formatMinutes(cat.remainMinutes)}
                         totalLabel={formatMinutes(cat.totalMinutes)}
                         onBulkComplete={() => handleBulkComplete(selectedChar, cat.category)}
