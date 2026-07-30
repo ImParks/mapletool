@@ -69,6 +69,8 @@ interface CharacterCacheRow {
   combat_power: number | null;
   arcane_force: number | null;
   authentic_force: number | null;
+  is_favorite: boolean;
+  is_active: boolean;
 }
 
 /** 넥슨 키 원문을 마스킹해 표시용 문자열만 만든다. 원문은 이 함수 밖으로(클라이언트로) 전달하지 않는다. */
@@ -138,7 +140,7 @@ export default async function MainPage() {
     supabase
       .from("character_cache")
       .select(
-        "ocid,character_name,world_name,character_class,character_level,image_url,combat_power,arcane_force,authentic_force"
+        "ocid,character_name,world_name,character_class,character_level,image_url,combat_power,arcane_force,authentic_force,is_favorite,is_active"
       )
       .eq("user_id", user.id),
     supabase
@@ -254,6 +256,8 @@ export default async function MainPage() {
       // 행이 하나도 없으면(undefined) 전체 보스 선택으로 간주(null) — supabase/README.md 참고.
       bossItemIds: bossSelection ? Array.from(bossSelection) : null,
       doneItemIds: Array.from(doneByOcid.get(c.ocid) ?? []),
+      isFavorite: c.is_favorite,
+      isActive: c.is_active,
     };
   });
 

@@ -190,3 +190,63 @@ export async function syncSchedulerState(
     return { error: message };
   }
 }
+
+/**
+ * 캐릭터 슬라이드 카드의 즐겨찾기 별 토글. 순수 표시용 플래그라 넥슨 호출이 없다 —
+ * character_cache.is_favorite 한 컬럼만 갱신한다(동기화 계열 액션은 이 컬럼을 절대 건드리지
+ * 않는다 — supabase/migrations/20260730110000 참고).
+ */
+export async function toggleCharacterFavorite(
+  characterOcid: string,
+  favorite: boolean
+): Promise<ActionResult<{ favorite: boolean }>> {
+  if (!characterOcid) return { error: "잘못된 요청입니다." };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "로그인이 필요합니다." };
+
+  const { error } = await supabase
+    .from("character_cache")
+    .update({ is_favorite: favorite })
+    .eq("user_id", user.id)
+    .eq("ocid", characterOcid);
+
+  if (error) return { error: "즐겨찾기 설정 중 오류가 발생했습니다." };
+
+  revalidatePath("/main");
+  return { favorite };
+}
+
+/**
+ * 캐릭터 활성/비활성 전환("숨기기"/설정의 "비활성 캐릭터" → "활성화"). 순수 표시용 플래그라
+ * 넥슨 호출이 없다 — character_cache.is_active 한 컬럼만 갱신한다. 하드 삭제가 아니다:
+ * completions/character_boss_selection/quest_durations 등 기존 데이터는 전혀 건드리지
+ * 않으며, 재활성화하면 그대로 돌아온다(동기화 계열 액션도 이 컬럼을 절대 건드리지 않는다 —
+ * supabase/migrations/20260730110000 참고).
+ */
+export async function setCharacterActive(
+  characterOcid: string,
+  active: boolean
+): Promise<ActionResult<{ active: boolean }>> {
+  if (!characterOcid) return { error: "잘못된 요청입니다." };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "로그인이 필요합니다." };
+
+  const { error } = await supabase
+    .from("character_cache")
+    .update({ is_active: active })
+    .eq("user_id", user.id)
+    .eq("ocid", characterOcid);
+
+  if (error) return { error: "캐릭터 상태 변경 중 오류가 발생했습니다." };
+
+  revalidatePath("/main");
+  return { active };
+}

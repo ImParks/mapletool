@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { Check, ChevronRight, ListChecks, RefreshCw, Settings as SettingsIcon, Shield } from "lucide-react";
+import { Check, ChevronRight, EyeOff, ListChecks, RefreshCw, Settings as SettingsIcon, Shield, Star } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { IconButton } from "@/components/ui/IconButton";
@@ -28,7 +28,14 @@ import type { ResetType } from "@/lib/period";
 import { cn } from "@/lib/cn";
 import { useCharacterWarmup } from "@/lib/character-warmup";
 import { runAction, runVoidAction } from "@/lib/safe-action";
-import { refreshCharacterSnapshot, saveDuration, syncSchedulerState, toggleCompletion } from "./actions";
+import {
+  refreshCharacterSnapshot,
+  saveDuration,
+  setCharacterActive,
+  syncSchedulerState,
+  toggleCharacterFavorite,
+  toggleCompletion,
+} from "./actions";
 import { saveBossSelection } from "./boss-selection-actions";
 import { refreshCharacterList } from "./nexon-key-actions";
 import { deleteAccountAction, resetAllCompletions, signOutAction } from "./settings-actions";
@@ -68,6 +75,10 @@ export interface CharacterDTO {
   bossItemIds: string[] | null;
   /** 현재 주기 기준 완료된 item id 목록(서버에서 currentPeriodKey 로 이미 필터링됨). */
   doneItemIds: string[];
+  /** 캐릭터 슬라이드 즐겨찾기 고정 여부(사용자가 별 아이콘으로 토글). */
+  isFavorite: boolean;
+  /** false 면 메인 슬라이드에서 숨김(설정의 "비활성 캐릭터" 목록에서만 노출·재활성화 가능). */
+  isActive: boolean;
 }
 
 interface MainScreenClientProps {
@@ -134,13 +145,47 @@ export function MainScreenClient({
     });
   }, [characters, characterOverrides]);
 
+  // 캐릭터별 활성 상태(낙관적). false 면 메인 슬라이드(월드 탭/카드)에서 완전히 빠진다 —
+  // 데이터(완료 기록/보스 선택/견적시간)는 그대로 남고 노출만 바뀐다.
+  const [activeMap, setActiveMap] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const c of characters) init[c.ocid] = c.isActive;
+    return init;
+  });
+  // 캐릭터별 즐겨찾기(낙관적).
+  const [favoriteMap, setFavoriteMap] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const c of characters) init[c.ocid] = c.isFavorite;
+    return init;
+  });
+
+  function isActiveFor(char: CharacterDTO): boolean {
+    return Object.prototype.hasOwnProperty.call(activeMap, char.ocid) ? activeMap[char.ocid] : char.isActive;
+  }
+  function isFavoriteFor(char: CharacterDTO): boolean {
+    return Object.prototype.hasOwnProperty.call(favoriteMap, char.ocid) ? favoriteMap[char.ocid] : char.isFavorite;
+  }
+
+  // 메인 슬라이드(월드 탭 개수/카드 목록)가 공통으로 쓰는 "활성 캐릭터만" 파생값. 비활성
+  // 캐릭터는 이 배열에서 완전히 빠지고, 설정 화면의 "비활성 캐릭터" 목록에서만 노출된다.
+  const activeCharactersView = useMemo(
+    () => charactersView.filter((c) => isActiveFor(c)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isActiveFor 는 activeMap 에 의존(이미 나열)
+    [charactersView, activeMap]
+  );
+  const inactiveCharacters = useMemo(
+    () => charactersView.filter((c) => !isActiveFor(c)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isActiveFor 는 activeMap 에 의존(이미 나열)
+    [charactersView, activeMap]
+  );
+
   const worlds = useMemo(() => {
     const seen: string[] = [];
-    for (const c of characters) {
+    for (const c of activeCharactersView) {
       if (!seen.includes(c.world)) seen.push(c.world);
     }
     return seen;
-  }, [characters]);
+  }, [activeCharactersView]);
 
   const [selectedWorld, setSelectedWorld] = useState<string | null>(worlds[0] ?? null);
 
@@ -236,24 +281,46 @@ export function MainScreenClient({
   }
 
   const worldCharsBase = useMemo(
-    () => charactersView.filter((c) => c.world === selectedWorld),
-    [charactersView, selectedWorld]
+    () => activeCharactersView.filter((c) => c.world === selectedWorld),
+    [activeCharactersView, selectedWorld]
   );
   const worldChars = useMemo(() => {
-    if (!autoSort) return worldCharsBase;
-    // 전체 완료(daily+weekly+boss 모두 done) 캐릭터만 뒤로 보내고, 그 외 상대 순서는 유지(안정 정렬).
+    // 정렬 우선순위: 즐겨찾기 그룹 → (autoSort 켜졌으면) 완료 캐릭터 뒤로 → 레벨 내림차순 →
+    // 안정성(동일 레벨 tie-break). 즐겨찾기가 여러 명이면 그 안에서도 레벨 내림차순으로 갈린다
+    // (favorite 이 같은 값이면 아래 비교가 자연히 level 비교로 넘어가므로 별도 분기 불필요).
     return worldCharsBase
-      .map((c, index) => ({ c, index, complete: isCharComplete(c) }))
-      .sort((a, b) => (a.complete === b.complete ? a.index - b.index : a.complete ? 1 : -1))
+      .map((c, index) => ({ c, index, favorite: isFavoriteFor(c), complete: autoSort && isCharComplete(c) }))
+      .sort((a, b) => {
+        if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+        if (a.complete !== b.complete) return a.complete ? 1 : -1;
+        if (a.c.level !== b.c.level) return b.c.level - a.c.level;
+        return a.index - b.index;
+      })
       .map((x) => x.c);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCharComplete 는 doneMap/bossSelectionMap 에 의존
-  }, [worldCharsBase, autoSort, doneMap, bossSelectionMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCharComplete/isFavoriteFor 는 doneMap/bossSelectionMap/favoriteMap 에 의존
+  }, [worldCharsBase, autoSort, doneMap, bossSelectionMap, favoriteMap]);
 
   const [selectedOcid, setSelectedOcid] = useState<string | null>(worldChars[0]?.ocid ?? null);
   const selectedChar = useMemo(
     () => charactersView.find((c) => c.ocid === selectedOcid) ?? null,
     [charactersView, selectedOcid]
   );
+
+  // 지금 보고 있는 월드의 활성 캐릭터를 전부 숨기면(handleSetActive) worlds 에서 그 월드
+  // 자체가 빠지는데, selectedWorld 는 그 변화를 스스로 알 방법이 없어 "탭엔 없는데 헤더엔
+  // 남아있는" 유령 월드 상태가 된다 — 월드 탭 어디도 하이라이트되지 않고, 헤더는 여전히
+  // "OO 캐릭터 0" 을 표시하며, 슬라이더는 빈 채로 남는다(사용자가 다른 월드 탭을 눌러야만
+  // handleSelectWorld 가 selectedWorld 를 고쳐줘서 복구됨). worlds 가 바뀔 때마다 selectedWorld
+  // 가 여전히 그 안에 있는지 확인해, 없으면 handleSelectWorld 와 동일한 규칙(다음 유효 월드의
+  // 첫 캐릭터)으로 재조정한다.
+  useEffect(() => {
+    if (selectedWorld !== null && worlds.includes(selectedWorld)) return;
+    const nextWorld = worlds[0] ?? null;
+    setSelectedWorld(nextWorld);
+    const first = activeCharactersView.find((c) => c.world === nextWorld);
+    setSelectedOcid(first ? first.ocid : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- activeCharactersView 는 매 렌더 새 배열이라 deps 에 넣으면 렌더마다 재실행된다. worlds 변화만으로 재조정 여부를 판단하기 충분하고(그 값이 활성 캐릭터의 월드 집합이다), selectedWorld 는 이 effect 가 직접 세팅하므로 deps 에 넣지 않는다(자기 자신을 트리거하는 순환을 피한다).
+  }, [worlds]);
 
   function progressFor(char: CharacterDTO) {
     const rel = relevantItemsFor(char);
@@ -356,6 +423,44 @@ export function MainScreenClient({
     );
   }
 
+  /** 카드 별 아이콘 토글. */
+  function handleToggleFavorite(char: CharacterDTO) {
+    const next = !isFavoriteFor(char);
+    setFavoriteMap((m) => ({ ...m, [char.ocid]: next }));
+    runAction(() => toggleCharacterFavorite(char.ocid, next), "즐겨찾기 설정 중 오류가 발생했습니다.").then((result) => {
+      if ("error" in result) {
+        setFavoriteMap((m) => ({ ...m, [char.ocid]: !next }));
+        showError(result.error);
+      }
+    });
+  }
+
+  /**
+   * 캐릭터 활성/비활성 전환. 비활성화는 상세 패널 헤더의 "숨기기" 버튼에서, 재활성화는 설정
+   * 화면 "비활성 캐릭터" 목록의 "활성화" 버튼에서 호출된다. 완료 기록/보스 선택 등 기존 데이터는
+   * 건드리지 않는다 — 화면 노출 여부만 바꾸는 소프트 토글이다(하드 삭제 아님).
+   */
+  function handleSetActive(char: CharacterDTO, active: boolean) {
+    const prev = isActiveFor(char);
+    // 방금 숨긴 캐릭터가 선택돼 있었다면 선택을 비운다 — 더 이상 슬라이드에 없는 캐릭터의
+    // 상세 패널이 고아 상태로 화면에 남는 것을 막는다. 이 토글이 실제로 선택을 비웠는지
+    // 기억해 뒀다가, 서버 액션이 실패해 activeMap 을 롤백할 때 선택도 함께 복구한다
+    // (그 사이 사용자가 다른 캐릭터를 골랐다면 덮어쓰지 않도록 롤백 시점에 한 번 더 확인한다).
+    const clearedSelection = !active && selectedOcid === char.ocid;
+    setActiveMap((m) => ({ ...m, [char.ocid]: active }));
+    if (clearedSelection) setSelectedOcid(null);
+
+    runAction(() => setCharacterActive(char.ocid, active), "캐릭터 상태를 변경하지 못했습니다.").then((result) => {
+      if ("error" in result) {
+        setActiveMap((m) => ({ ...m, [char.ocid]: prev }));
+        if (clearedSelection) {
+          setSelectedOcid((cur) => (cur === null ? char.ocid : cur));
+        }
+        showError(result.error);
+      }
+    });
+  }
+
   // 아래 세 핸들러는 모두 "모달 안에서 누르는 버튼"이다. 예전에는 액션이 던진 예외를 잡지
   // 않아서(트랜지션 밖으로 전파 → error.tsx) 버튼 하나 실패에 화면 전체가 에러 페이지로
   // 교체됐다. runAction/runVoidAction 으로 예외를 메시지로 바꿔 에러 모달에만 띄운다.
@@ -391,7 +496,7 @@ export function MainScreenClient({
 
   function handleSelectWorld(world: string) {
     setSelectedWorld(world);
-    const first = characters.find((c) => c.world === world);
+    const first = activeCharactersView.find((c) => c.world === world);
     setSelectedOcid(first ? first.ocid : null);
     setHoverOcid(null);
     setPopup(null);
@@ -578,7 +683,7 @@ export function MainScreenClient({
 
   function handleGoHome() {
     setSelectedWorld(worlds[0] ?? null);
-    const first = characters.find((c) => c.world === (worlds[0] ?? null));
+    const first = activeCharactersView.find((c) => c.world === (worlds[0] ?? null));
     setSelectedOcid(first ? first.ocid : null);
     setHoverOcid(null);
     setPopup(null);
@@ -749,13 +854,25 @@ export function MainScreenClient({
                 다시 동기화
               </Button>
             </div>
+          ) : activeCharactersView.length === 0 ? (
+            // 캐릭터는 있지만 전부 숨김 처리된 상태 — worlds/selectedWorld 가 비어 "null 캐릭터"
+            // 같은 값이 그대로 보이는 것을 막고, 설정으로 안내한다.
+            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-maple-line bg-maple-surface-raised px-6 py-12 text-center">
+              <p className="text-sm font-semibold text-maple-text-secondary">모든 캐릭터가 숨겨져 있어요.</p>
+              <p className="max-w-[36ch] text-xs text-maple-text-muted">
+                설정의 &ldquo;비활성 캐릭터&rdquo;에서 다시 활성화할 수 있어요.
+              </p>
+              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
+                설정 열기
+              </Button>
+            </div>
           ) : (
             <>
               <div>
                 <div className="mb-2.5 text-xs font-extrabold tracking-[.04em] text-maple-text-muted">월드</div>
                 <div className="flex flex-wrap gap-2">
                   {worlds.map((world) => {
-                    const count = characters.filter((c) => c.world === world).length;
+                    const count = activeCharactersView.filter((c) => c.world === world).length;
                     const active = world === selectedWorld;
                     return (
                       <button
@@ -801,6 +918,7 @@ export function MainScreenClient({
                     const progress = progressFor(char);
                     const complete = progress.total > 0 && progress.done >= progress.total;
                     const selected = char.ocid === selectedOcid;
+                    const favorite = isFavoriteFor(char);
                     return (
                       <div
                         key={char.ocid}
@@ -842,6 +960,31 @@ export function MainScreenClient({
                           <span className="pointer-events-none absolute bottom-2 left-2 rounded-[7px] border border-[#ffe0c2] bg-white/[.92] px-[7px] py-[2px] text-[10.5px] font-extrabold tabular-nums text-maple-orange-300">
                             Lv.{char.level}
                           </span>
+                          {/* 별 버튼은 카드 onClick(선택)과 별개의 독립된 액션이라 stopPropagation
+                              한다 — 안 하면 즐겨찾기 토글이 선택 변경과 함께 일어나 버블링을 타고
+                              handleSelectCharacter 도 호출된다(해로울 건 없지만 의도를 흐린다). */}
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleToggleFavorite(char);
+                            }}
+                            aria-label={favorite ? `${char.name} 즐겨찾기 해제` : `${char.name} 즐겨찾기 추가`}
+                            aria-pressed={favorite}
+                            className={cn(
+                              "absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border transition-colors duration-180",
+                              favorite
+                                ? "border-maple-orange bg-maple-orange text-white shadow-glow-orange"
+                                : "border-maple-line bg-white/[.92] text-maple-text-muted hover:text-maple-orange"
+                            )}
+                          >
+                            <Star
+                              className="h-3.5 w-3.5"
+                              strokeWidth={2.4}
+                              fill={favorite ? "currentColor" : "none"}
+                              aria-hidden="true"
+                            />
+                          </button>
                           {complete && (
                             <span className="pointer-events-none absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-maple-success text-white shadow-glow-success">
                               <Check className="h-3.5 w-3.5" strokeWidth={3.2} aria-hidden="true" />
@@ -928,6 +1071,15 @@ export function MainScreenClient({
                       >
                         숙제 동기화
                       </Button>
+                      {/* 재활성화는 설정 화면의 "비활성 캐릭터" 목록에서만 한다 — 여기 버튼은
+                          숨기기(비활성화) 전용이라 selectedChar 가 항상 활성 캐릭터라는 전제가
+                          안전하다(비활성 캐릭터는애초에 슬라이드/선택 대상에서 빠지므로). */}
+                      <IconButton
+                        ariaLabel={`${selectedChar.name} 숨기기`}
+                        onClick={() => handleSetActive(selectedChar, false)}
+                      >
+                        <EyeOff className="h-[18px] w-[18px]" aria-hidden="true" />
+                      </IconButton>
                     </div>
                   </div>
 
@@ -1116,6 +1268,32 @@ export function MainScreenClient({
               </div>
             </div>
           </div>
+
+          {/* 즐겨찾기/숨김이 하나도 없는 대다수 사용자에게는 안 보이는 섹션 — 숨긴 캐릭터가
+              있을 때만 렌더한다(빈 섹션으로 설정 화면을 채우지 않는다). */}
+          {inactiveCharacters.length > 0 && (
+            <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
+              <h3 className="text-sm font-extrabold text-maple-text-primary">비활성 캐릭터</h3>
+              <p className="mt-1 text-[11.5px] text-maple-text-muted">
+                메인 화면 슬라이드에서 숨긴 캐릭터예요. 다시 활성화하면 슬라이드로 돌아와요.
+              </p>
+              <div className="mt-3 flex flex-col divide-y divide-maple-line-subtle">
+                {inactiveCharacters.map((c) => (
+                  <div key={c.ocid} className="flex items-center gap-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold text-maple-text-primary">{c.name}</div>
+                      <div className="truncate text-[11px] text-maple-text-muted">
+                        {c.world} · Lv.{c.level}
+                      </div>
+                    </div>
+                    <Button variant="secondary" size="sm" onClick={() => handleSetActive(c, true)}>
+                      활성화
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-2xl border border-maple-line bg-maple-surface-card p-4">
             <h3 className="text-sm font-extrabold text-maple-text-primary">완료 기록 초기화</h3>
